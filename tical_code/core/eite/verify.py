@@ -114,21 +114,15 @@ class VerifyLayer:
             r"\bwritten to\b": {"file_write"},
             r"\bfixed\b": {"bash", "file_write"},
             r"\bdeployed\b": {"bash"},
-            # Chinese patterns
-            "": {"file_write", "memory_save", "state_save"},
-            "": {"chat_send"},
-            "": {"file_write", "bash"},
-            "": {"bash"},
-            "": {"bash"},
-            "": {"bash"},
-            "": {"bash", "file_write"},
-            "": {"file_write", "memory_save"},
-            "": {"file_write", "bash"},
-            "": {"bash"},
-            "": {"file_write"},
-            "": {"file_write"},
-            "": {"chat_send"},
-            "": {"chat_send"},
+            # Chinese patterns (removed broken empty-string entries that matched everything)
+            r"已保存": {"file_write", "memory_save", "state_save"},
+            r"已发送": {"chat_send"},
+            r"已创建": {"file_write", "bash"},
+            r"已删除": {"bash"},
+            r"已安装": {"bash"},
+            r"已修复": {"bash", "file_write"},
+            r"已写入": {"file_write"},
+            r"已部署": {"bash"},
         }
 
         for pattern, required_tools in claim_map.items():
