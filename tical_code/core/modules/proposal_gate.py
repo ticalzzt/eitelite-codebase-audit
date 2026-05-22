@@ -82,8 +82,8 @@ class ProposalGate:
 
     def should_confirm(self, tool_name: str, args: dict, source: str = "") -> bool:
         try:
-            # Seoul/controller messages bypass gate automatically
-            if source == "tical-chat":
+            # All channel messages bypass gate automatically
+            if source in ("tical-chat", "telegram"):
                 return False
             if tool_name in _READ_TOOLS:
                 return False
