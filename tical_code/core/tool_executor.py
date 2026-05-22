@@ -527,6 +527,21 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the internet via DuckDuckGo/SearXNG. Returns URLs and snippets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "max_results": {"type": "integer", "description": "Max results (default 5)", "default": 5}
+                },
+                "required": ["query"]
+            }
+        }
+    },
 ]
 
 # ============ TOOL_SCHEMAS_CLEAN (remove bash_execute if present) ============
@@ -983,6 +998,23 @@ def exec_xurl_timeline(args):
     except Exception as e:
         return {"error": "xurl_timeline: " + str(e)}
 
+def exec_web_search(args):
+    """Search the internet for information."""
+    import asyncio
+    try:
+        from tical_code.plugins.search_plugin import SearchPlugin
+        sp = SearchPlugin()
+        loop = asyncio.new_event_loop()
+        result = loop.run_until_complete(sp.web_search(args))
+        loop.close()
+        if result.success:
+            return {"ok": True, "data": result.data, "results": result.data.get("results", [])}
+        return {"error": result.error or "web_search failed"}
+    except ImportError:
+        return {"error": "Search plugin not available"}
+    except Exception as e:
+        return {"error": "web_search: " + str(e)}
+
 
 # ============ FTS Memory 1 Tool ============
 
@@ -1018,6 +1050,7 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "xurl_post": exec_xurl_post,
         "xurl_reply": exec_xurl_reply,
         "xurl_timeline": exec_xurl_timeline,
+        "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
         "memory_save": lambda a: exec_memory_save(a, base_dir),
