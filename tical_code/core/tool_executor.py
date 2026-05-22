@@ -791,7 +791,7 @@ _executor_browser = None
 def _get_browser():
     global _executor_browser
     if _executor_browser is None:
-        from plugins.browser.browser_controller import BrowserController
+        from tical_code.plugins.browser.browser_controller import BrowserController
         _executor_browser = BrowserController()
     return _executor_browser
 
