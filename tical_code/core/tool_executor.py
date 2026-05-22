@@ -742,7 +742,7 @@ def exec_web_fetch(args: dict) -> dict:
 def exec_analyze_image(args: dict) -> dict:
     """Analyze an image with a text prompt using VisionPlugin."""
     try:
-        from plugins.vision import VisionPlugin
+        from tical_code.plugins.vision import VisionPlugin
         plugin = VisionPlugin()
         result = plugin.analyze_image(
             image_path=args["image_path"],
@@ -757,7 +757,7 @@ def exec_analyze_image(args: dict) -> dict:
 def exec_ocr(args: dict) -> dict:
     """Extract text from an image using VisionPlugin OCR."""
     try:
-        from plugins.vision import VisionPlugin
+        from tical_code.plugins.vision import VisionPlugin
         plugin = VisionPlugin()
         result = plugin.ocr(image_path=args["image_path"])
         return {"content": str(result)}
