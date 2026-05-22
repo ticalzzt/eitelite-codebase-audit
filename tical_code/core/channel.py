@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 import logging
 import urllib.request, urllib.error
@@ -65,10 +66,45 @@ class TelegramChannel(Channel):
             logger.warning(f"tg_poll error: {e}")
             return []
 
+    @staticmethod
+    def _convert_tables(text: str) -> str:
+        """Convert markdown tables to bullet lists for Telegram."""
+        lines = text.split("\n")
+        result = []
+        in_table = False
+        headers = []
+        for line in lines:
+            stripped = line.strip()
+            # Detect table separator line (|---|---|)
+            if re.match(r"^\|[\s\-:|]+\|$", stripped):
+                in_table = True
+                continue
+            # Detect table row (| xxx | yyy |)
+            if stripped.startswith("|") and stripped.endswith("|"):
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                if not in_table:
+                    # First row = headers
+                    headers = cells
+                    continue
+                # Data row → bullet list
+                if headers and len(cells) == len(headers):
+                    pairs = [f"  • {h}: {c}" for h, c in zip(headers, cells) if c]
+                    result.append("\n".join(pairs))
+                else:
+                    result.append("  • " + " | ".join(cells))
+                continue
+            # Not a table line
+            if in_table and headers:
+                in_table = False
+                headers = []
+            result.append(line)
+        return "\n".join(result)
+
     def send(self, response: Response) -> bool:
         try:
+            text = self._convert_tables(response.content[:4000])
             data = json.dumps({"chat_id": response.chat_id,
-                               "text": response.content[:4000]}).encode()
+                               "text": text}).encode()
             req = urllib.request.Request(
                 f"{self._api}/sendMessage", data=data,
                 headers={"Content-Type": "application/json"}, method="POST")
