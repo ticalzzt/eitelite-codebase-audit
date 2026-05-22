@@ -31,22 +31,15 @@ _VERB_TOOL_MAP: dict[str, list[str]] = {
 }
 
 _ZH_VERB_MAP: dict[str, list[str]] = {
-    "": ["file_write", "state_save", "memory_save"],
-    "": ["file_write", "bash"],
-    "": ["bash", "file_write"],
-    "": ["bash"],
-    "": ["bash"],
-    "": ["bash", "file_write"],
-    "": ["file_read", "web_fetch", "bash"],
-    "": ["bash", "file_read"],
-    "": ["chat_send"],
-    "": ["file_write", "state_save", "memory_save"],
-    "": ["file_write", "bash"],
-    "": ["bash", "file_write"],
-    "": ["file_write"],
-    "": ["file_write"],
-    "": ["chat_send"],
-    "": ["chat_send"],
+    "已保存": ["file_write", "state_save", "memory_save"],
+    "已创建": ["file_write", "bash"],
+    "已删除": ["bash", "file_write"],
+    "已安装": ["bash"],
+    "已部署": ["bash"],
+    "已修复": ["bash", "file_write"],
+    "已检查": ["file_read", "web_fetch", "bash"],
+    "已确认": ["bash", "file_read"],
+    "已发送": ["chat_send"],
 }
 
 # Compiled regexes for detection
@@ -55,8 +48,7 @@ _EN_CLAIM_RE = re.compile(
     re.I,
 )
 _ZH_CLAIM_RE = re.compile(
-    r"(||||||||"
-    r"|||||||)",
+    r"(已保存|已创建|已删除|已安装|已部署|已修复|已检查|已确认|已发送)",
 )
 _SCOPE_WORDS = re.compile(r"\b(production|deployed|all systems|completely fixed)\b", re.I)
 _CERTAINTY_WORDS = re.compile(r"\b(definitely|for sure|100%)\b", re.I)
