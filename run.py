@@ -22,8 +22,7 @@ def main():
     with open(config_path) as f:
         cfg = json.load(f)
 
-    # Import and run
-    from eite_core.core.unified_worker import Worker
+    from tical_code.core.unified_worker import Worker
     worker = Worker(cfg)
     worker.run()
 
