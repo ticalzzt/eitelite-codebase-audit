@@ -1,0 +1,8 @@
+config.json
+*.db
+*.db-shm
+*.db-wal
+.trust_state.json
+__pycache__/
+*.pyc
+.cron_data/
