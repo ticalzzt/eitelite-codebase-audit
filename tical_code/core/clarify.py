@@ -112,55 +112,55 @@ class ClarifyAnswer:
 
 # Op( HARD_CLARIFY or CONSTITUTION_GATE)
 _HIGH_RISK_PATTERNS = [
-    # Delete/
-    (r'(?:||||drop|delete|remove|truncate|purge|erase)', "/"),
-    # /
-    (r'(?:|||||||transfer|pay|purchase|buy|sell|trade)', "/"),
-    # Send/
-    (r'(?:Send||send|publish|deploy|submit)', "Send/Op"),  # v0.5.7: push//not(gitOp)
-    # System
-    (r'(?:|||modify config|change setting|system config)', ""),
-    # Perm
-    (r'(?:|||grant|permission|role|chmod|chown|sudo)', ""),
+    # Delete/删除
+    (r'(?:删除|清除|drop|delete|remove|truncate|purge|erase)', "删除/高风险"),
+    # /转账
+    (r'(?:转账|汇款|付款|打钱|transfer|pay|purchase|buy|sell|trade)', "转账/财务"),
+    # Send/发布
+    (r'(?:Send|发布|发送|send|publish|deploy|submit)', "Send/发布操作"),  # v0.5.7: push发布/推送(not git操作)
+    # System系统
+    (r'(?:修改配置|改配置|修改设置|modify config|change setting|system config)', "系统配置"),
+    # Perm权限
+    (r'(?:授权|赋权|提权|grant|permission|role|chmod|chown|sudo)', "权限操作"),
 ]
 
-# Info(Target"","",""Param)
+# Info(Target目标,什么,哪些Param)
 _MISSING_INFO_INDICATORS = {
-    # Target
+    # Target目标
     "target_missing": [
-        r'(?:||||||)',
+        r'(?:这个|那个|它|它们|它们|do it|handle it|fix it|take care of it)',
         r'(?:do it|handle it|fix it|take care of it)',
     ],
-    # /
+    # 范围/数量
     "scope_missing": [
-        r'(?:||||some|few|many|a lot)',
-        r'(?:|||batch|all|everything)',
+        r'(?:一些|几个|一些|有些|some|few|many|a lot)',
+        r'(?:全部|所有|一批|batch|all|everything)',
     ],
-    # 
+    # 条件
     "condition_missing": [
-        r'(?:|||when appropriate|when needed|if necessary)',
+        r'(?:合适的时候|需要时|有空时|when appropriate|when needed|if necessary)',
     ],
-    # Time
+    # Time时间
     "time_missing": [
-        r'(?:||||asap|as soon as|right away)',
+        r'(?:尽快|马上|立刻|立即|asap|as soon as|right away)',
     ],
 }
 
 # (Target)
 _AMBIGUITY_INDICATORS = [
-    # 
-    (r'(?:(?:)?|(?:)?|(?:)?|(?:)?||||)\s*(?:)?(?:|||)', ""),
-    # 
-    (r'(?:|||fix|handle|deal with|process)\s*(?:)?(?:||)', ""),
-    # 
-    (r'(?:||associated|related|relevant)', ""),
+    # 这个那个
+    (r'(?:(?:这个)?|(?:那个)?|(?:这个)?|(?:那个)?|这个|那个|这个那个)\s*(?:东西|事情|问题|任务)?(?:什么|啥|是什么|怎么做)', "目标不明确"),
+    # 处理修复
+    (r'(?:处理|修复|搞定|解决|fix|handle|deal with|process)\s*(?:这个|那个)?(?:东西|事情|问题)', "操作不具体"),
+    # 相关
+    (r'(?:相关|有关|关联|associated|related|relevant)', "相关性不明确"),
 ]
 
 # not(Info)
 _CONTEXT_INSUFFICIENT_INDICATORS = [
-    r'(?:|||previous|last|original)',
-    r'(?:||other|another)',
-    r'(?:||somewhere|someplace)',
+    r'(?:之前|以前|原来的|previous|last|original)',
+    r'(?:其他|别的|另一个|other|another)',
+    r'(?:某处|某个地方|somewhere|someplace)',
 ]
 
 # =============================================================================
