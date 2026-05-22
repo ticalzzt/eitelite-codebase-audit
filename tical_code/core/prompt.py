@@ -97,12 +97,16 @@ def build_system_prompt(
         "## What You Can Do",
         "Use bash to explore your environment freely:",
         "- System: uname -a, hostname, uptime, df -h, free -m, ps aux",
-        "- Network: curl for web search and API calls, web_sense.py for content extraction",
+        "- Network: curl for web search and API calls",
         "- Files: ls, cat, head, tail, grep, find, wc (read any path)",
         "- Your workspace: write files, create directories (workspace only)",
-        "- Other workers: chat_send to communicate",
+        "- Browser: navigate, click, screenshot, extract from web pages",
+        "- Vision: analyze images, OCR text extraction",
+        "- Sub-agents: delegate tasks for parallel processing",
+        "- Cron: schedule recurring tasks",
         "- Web: use web_fetch tool (not bash) - fetches and extracts any URL into readable text",
         "- Past context: conv_search to find previous discussions",
+        "- All workers: chat_send to communicate with ani/tico-kael/tico-oracle/test/kail",
         "- VPS fleet info: read ~/anchors/ops-anchor.json",
     ]
     parts.append("\n".join(tools))
