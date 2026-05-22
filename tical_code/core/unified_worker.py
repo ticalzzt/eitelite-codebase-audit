@@ -92,17 +92,7 @@ class Worker:
         self.reporter = TruthfulReporter(workspace=w)
         self.gate = ProposalGate(timeout_seconds=300)
 
-        # Vigil — AI safety runtime (v1: pure software, no hardware)
-        try:
-            self.vigil = build_vigil()
-            self._vigil_enabled = True
-            logger.info("Vigil safety runtime active")
-        except Exception:
-            self.vigil = None
-            self._vigil_enabled = False
-            logger.warning("Vigil not available")
-
-        # Vigil — AI safety runtime (optional: v1 pure-software mode)
+        # Vigil — AI safety runtime
         try:
             self.vigil = build_vigil()
             self._vigil_enabled = True
