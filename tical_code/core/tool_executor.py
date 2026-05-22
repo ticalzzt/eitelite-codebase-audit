@@ -483,6 +483,50 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "xurl_post",
+            "description": "Post a tweet to X/Twitter",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Tweet text"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "xurl_reply",
+            "description": "Reply to an existing tweet",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tweet_id": {"type": "string", "description": "ID of tweet to reply to"},
+                    "text": {"type": "string", "description": "Reply text"}
+                },
+                "required": ["tweet_id", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "xurl_timeline",
+            "description": "Get a users timeline",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "username": {"type": "string"},
+                    "count": {"type": "integer"}
+                },
+                "required": ["username"]
+            }
+        }
+    },
 ]
 
 # ============ TOOL_SCHEMAS_CLEAN (remove bash_execute if present) ============
@@ -902,6 +946,44 @@ def exec_cron_cancel(args: dict) -> dict:
     except Exception as e:
         return {"error": f"Cron cancel failed: {e}"}
 
+
+def exec_xurl_post(args):
+    import asyncio
+    try:
+        from plugins.xurl import XUrlPlugin
+        xp = XUrlPlugin()
+        result = asyncio.run(xp.post_tweet(args))
+        if result.success:
+            return {"ok": True, "data": result.data, "text": str(args.get("text", ""))[:50]}
+        return {"error": result.error or "post_tweet failed"}
+    except Exception as e:
+        return {"error": "xurl_post: " + str(e)}
+
+def exec_xurl_reply(args):
+    import asyncio
+    try:
+        from plugins.xurl import XUrlPlugin
+        xp = XUrlPlugin()
+        result = asyncio.run(xp.reply_tweet(args))
+        if result.success:
+            return {"ok": True, "data": result.data}
+        return {"error": result.error or "reply_tweet failed"}
+    except Exception as e:
+        return {"error": "xurl_reply: " + str(e)}
+
+def exec_xurl_timeline(args):
+    import asyncio
+    try:
+        from plugins.xurl import XUrlPlugin
+        xp = XUrlPlugin()
+        result = asyncio.run(xp.get_timeline(args))
+        if result.success:
+            return {"ok": True, "data": result.data, "tweets": result.data.get("tweets", [])}
+        return {"error": result.error or "get_timeline failed"}
+    except Exception as e:
+        return {"error": "xurl_timeline: " + str(e)}
+
+
 # ============ FTS Memory 1 Tool ============
 
 _executor_fts = None
@@ -933,6 +1015,9 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
     logger.info(f"[executor] {name}({str(args)[:80]})")
     dispatch = {
         "bash": exec_bash,
+        "xurl_post": exec_xurl_post,
+        "xurl_reply": exec_xurl_reply,
+        "xurl_timeline": exec_xurl_timeline,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
         "memory_save": lambda a: exec_memory_save(a, base_dir),
