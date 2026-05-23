@@ -303,7 +303,10 @@ All other messages enter the LLM conversation loop.
         if hasattr(self, "eite") and self.eite:
             self.eite.reset_session()
 
-    def _process(self, msg: Message) -> None:
+        # Process through LLM + tools
+        self._process(channel, msg)
+
+    def _process(self, channel, msg: Message) -> None:
         """Process a single incoming message — guaranteed to produce a reply."""
         # Deadlock busters: reset all guards for each incoming message
         self.gate.clear_pending()
