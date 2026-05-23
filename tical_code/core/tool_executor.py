@@ -18,6 +18,17 @@ if not WORKSPACE:
     logger.warning("[executor] TICOBOT_DIR not set, workspace unrestricted")
 WORKSPACE = os.path.expanduser(WORKSPACE) if WORKSPACE else os.path.expanduser("~")
 
+# === System paths — never write outside workspace ===
+# These are always-protected even if they happen to fall within workspace
+PROTECTED_SYSTEM_PATHS = [
+    "/opt/",
+    "/etc/",
+    "/root/",
+    "/var/lib/",
+    "/boot/",
+    "/usr/",
+]
+
 # === Absolutely forbidden commands (always block) ===
 BASH_BLACKLIST = [
     r"\breboot\b",
@@ -28,6 +39,16 @@ BASH_BLACKLIST = [
     r"\brm\s+-rf\s+/\s*$",
     r"\brm\s+-rf\s+~$",
     r"\brm\s+-rf\s+\$HOME\b",
+    # Block rm -rf on protected system paths
+    r"\brm\s+-rf\s+/opt/",
+    r"\brm\s+-rf\s+/etc/",
+    r"\brm\s+-rf\s+/root/",
+    r"\brm\s+-rf\s+/boot/",
+    r"\brm\s+-rf\s+/var/lib/",
+    r"\brm\s+-rf\s+/usr/",
+    # Block rm on SSH keys (even without -rf)
+    r"\brm\s+(?:-rf\s+)?.*\.ssh/authorized_keys\b",
+    r"\brm\s+(?:-rf\s+)?.*\.ssh/id_",
     r"\bcurl\s+.*\|\s*(ba|sh)\b",
     r"\bwget\s+.*\|\s*(ba|sh)\b",
     r"\biptables\s+-F\b",
@@ -78,7 +99,19 @@ def _bash_safety_check(command: str) -> Optional[str]:
     if command.strip().startswith("python") and " -c " in command:
         return None
 
-    # 3. Write command — check if target is within workspace
+    # 3. Check for protected system paths in write commands
+    # Handles: ~/.ssh/authorized_keys, cd /opt/ && rm *, etc.
+    command_normalized = command.replace("~", str(Path.home()))
+    abs_paths = re.findall(r'(?<!\w)(/[\w./_\-]+)', command_normalized)
+    for p in abs_paths:
+        for protected in PROTECTED_SYSTEM_PATHS:
+            if p.startswith(protected):
+                return f"Write to protected system path denied: {p}"
+        # Also protect .ssh directory at any absolute path
+        if "/.ssh/" in p and ("authorized_keys" in p or "id_" in p):
+            return f"Write to SSH configuration denied: {p}"
+
+    # 4. Write command — check if target is within workspace
     # Extract likely target paths from the command
     write_outside = False
     
