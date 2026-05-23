@@ -40,7 +40,7 @@ _SAFE_PIPE_RE = re.compile(r"\|\s*(grep|head|tail|wc)\b")
 
 _CONFIRM_RES = [
     re.compile(r"\b(yes|ok|sure|go ahead|do it|proceed|confirm|go|done)\b", re.I),
-    re.compile(r"(好的|可以|行|没问题|确认|执行|去吧|做吧|是的|对的|嗯|好吧)"),
+    re.compile(r"(|||||||||)"),
     re.compile(r"\b(ja|mach|los)\b", re.I),
     re.compile(r"\b(oui|fait|allez)\b", re.I),
     re.compile(r"\b(sí|haz|hacer)\b", re.I),
@@ -48,7 +48,7 @@ _CONFIRM_RES = [
 
 _REJECT_RES = [
     re.compile(r"\b(no|don't|cancel|stop|wait|hold on|not)\b", re.I),
-    re.compile(r"(不|不要|取消|停下|等等|算了|别|不行|不可以|拒绝)"),
+    re.compile(r"(||||||)"),
     re.compile(r"\b(nein|warte|nicht)\b", re.I),
     re.compile(r"\b(non|attendez|pas)\b", re.I),
     re.compile(r"\b(espera)\b", re.I),
@@ -82,8 +82,11 @@ class ProposalGate:
 
     def should_confirm(self, tool_name: str, args: dict, source: str = "") -> bool:
         try:
-            # All channel messages bypass gate automatically
-            if source in ("tical-chat", "telegram"):
+            # Seoul/controller messages bypass gate automatically
+            if source == "tical-chat":
+                return False
+            # Telegram messages bypass gate — user expects direct replies, not proposals
+            if source == "telegram":
                 return False
             if tool_name in _READ_TOOLS:
                 return False

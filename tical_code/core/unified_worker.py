@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tical_code.core.channel import Message, Response, TelegramChannel, TicalChatChannel
 from tical_code.core.llm_backend import create_llm_backend
-from tical_code.core.tool_executor import execute, TOOL_SCHEMAS
-from tical_code.core.response_formatter import format_result, format_error, format_progress
+from tical_code.core.tool_executor import execute, TOOL_SCHEMAS, redact_secrets
+from tical_code.core.response_formatter import format_result
 from tical_code.core.eite import init as eite_init, get_verify
 from tical_code.core.prompt import build_system_prompt
 from tical_code.core.config import load_config
@@ -26,6 +26,8 @@ from tical_code.core.modules.context_compactor import ContextCompactor
 from tical_code.core.modules.loop_detector import LoopDetector
 from tical_code.core.modules.truthful_reporter import TruthfulReporter
 from tical_code.core.modules.proposal_gate import ProposalGate
+from tical_code.core.usage import UsageTracker
+from tical_code.core.heartbeat import HeartbeatConfig, HeartbeatManager
 from tical_code.vigil import build_vigil, NewInstruction
 
 # Known AI worker names — used to detect worker-to-worker messages
@@ -92,7 +94,15 @@ class Worker:
         self.reporter = TruthfulReporter(workspace=w)
         self.gate = ProposalGate(timeout_seconds=300)
 
-        # Vigil — AI safety runtime
+        # Usage tracking
+        self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
+        
+        # Heartbeat manager
+        hb_cfg = HeartbeatConfig()
+        hb_cfg.heartbeat_interval = 300
+        self.heartbeat = HeartbeatManager(default_config=hb_cfg)
+
+        # Vigil — AI safety runtime (v1: pure software, no hardware)
         try:
             self.vigil = build_vigil()
             self._vigil_enabled = True
@@ -101,6 +111,7 @@ class Worker:
             self.vigil = None
             self._vigil_enabled = False
             logger.warning("Vigil not available")
+
 
         self.system_prompt = build_system_prompt(
             name=cfg['name'],
@@ -467,10 +478,10 @@ All other messages enter the LLM conversation loop.
                     if warnings:
                         logger.warning(f"EITE unverified claims: {warnings}")
 
-                # Module 4: Scan for violations
+                # Module 4: Scan for violations — log only, don't append to reply
                 violations = self.reporter.scan_reply(reply)
                 if violations:
-                    reply += "\n" + self.reporter.format_corrections(violations)
+                    logger.warning(f"trust violations: {violations}")
 
                 # Check for continuation hint — only if explicit "I still need to"
                 if "I still need to" in reply:
