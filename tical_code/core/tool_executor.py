@@ -1171,16 +1171,20 @@ def exec_switch_model(args: dict) -> dict:
             if not api_key:
                 api_key = os.environ.get(info["key_env"], "")
         
-        # If no api_key from args or env, try current backend key
-        if not api_key and _executor_llm:
-            api_key = getattr(_executor_llm, "_api_key", "")
-        if not api_key:
+        # Pull missing values from current backend
+        if _executor_llm:
+            if not api_key:
+                api_key = getattr(_executor_llm, "_api_key", "")
+            if not base_url:
+                base_url = getattr(_executor_llm, "_base_url", "")
+        if not api_key or not base_url:
             # Last resort: try config files
             from tical_code.core.llm_backend import _load_configs
             configs = _load_configs()
             if configs:
                 cfg, src = configs[0]
-                api_key = cfg.get("ai_key", "")
+                if not api_key:
+                    api_key = cfg.get("ai_key", "")
                 if not base_url:
                     base_url = cfg.get("ai_endpoint", "")
         
