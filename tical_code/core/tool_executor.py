@@ -1632,6 +1632,10 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
     }
     handler = dispatch.get(name)
     if not handler:
+        # Try with dots restored (API sends __ for dots)
+        normalized = name.replace("__", ".")
+        handler = dispatch.get(normalized)
+    if not handler:
         return {"error": f"Unknown tool: {name}"}
 
     try:

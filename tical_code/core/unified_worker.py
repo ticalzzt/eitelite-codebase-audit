@@ -40,10 +40,14 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 
-# Clean TOOL_SCHEMAS: remove bash_execute if present
-TOOL_SCHEMAS_CLEAN = [
-    s for s in TOOL_SCHEMAS if s["function"]["name"] != "bash_execute"
-]
+# Clean TOOL_SCHEMAS: remove bash_execute, replace dots in names for API compat
+TOOL_SCHEMAS_CLEAN = []
+for s in TOOL_SCHEMAS:
+    if s["function"]["name"] == "bash_execute":
+        continue
+    s_copy = json.loads(json.dumps(s))
+    s_copy["function"]["name"] = s_copy["function"]["name"].replace(".", "__")
+    TOOL_SCHEMAS_CLEAN.append(s_copy)
 
 # Tool call limits
 MAX_TOOL_ITERATIONS = 8
@@ -313,9 +317,13 @@ All other messages enter the LLM conversation loop.
         self.loop_detector.reset()
         self._consecutive_blocks = 0
         
+        # Init conversation with system prompt
+        conv = [{"role": "system", "content": self.system_prompt}]
+        # Load session history
         session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
         history = self.sessions.load_session(session_id)
-        conv.extend(history)
+        if history:
+            conv.extend(history)
         conv.append({"role": "user", "content": msg.content})
 
         max_iterations = 60
