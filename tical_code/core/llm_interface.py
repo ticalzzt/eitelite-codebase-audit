@@ -43,6 +43,7 @@ class ChatResponse:
     finish_reason: str = "stop"
     usage: Dict[str, int] = field(default_factory=dict)
     elapsed_ms: float = 0.0
+    reasoning_content: str = ""
 
     @property
     def has_tool_calls(self) -> bool:
@@ -300,6 +301,7 @@ class DeepSeekProvider(LLMProvider):
             finish_reason=choice.get("finish_reason", "stop"),
             usage=data.get("usage", {}),
             elapsed_ms=elapsed_ms,
+            reasoning_content=msg.get("reasoning_content", ""),
         )
 
     # ── Error hint ──────────────────────────────────────────

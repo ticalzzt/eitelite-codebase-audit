@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tical_code.core.channel import Message, Response, TelegramChannel, TicalChatChannel
-from tical_code.core.llm_backend import create_llm_backend
+from tical_code.core.llm_interface import DeepSeekProvider
 from tical_code.core.tool_executor import execute, TOOL_SCHEMAS, redact_secrets
 from tical_code.core.response_formatter import format_result
 from tical_code.core.eite import init as eite_init, get_verify
@@ -79,10 +79,10 @@ class Worker:
             logger.info(f"tical-chat channel ready ({cfg['chat_url']})")
 
         # LLM backend
-        self.llm = create_llm_backend(
+        self.llm = DeepSeekProvider(
             model=cfg.get("ai_model", "deepseek-chat"),
             api_key=cfg.get("ai_key", ""),
-            base_url=cfg.get("ai_endpoint", ""),
+            base_url=cfg.get("ai_endpoint", "https://api.deepseek.com/v1"),
         )
 
         # Expose LLM to tool_executor for switch_model
@@ -338,7 +338,7 @@ All other messages enter the LLM conversation loop.
                 conv = self.compactor.compact(conv, lambda msgs: {"content": ""})
                 logger.info(f"[worker] context compacted: {len(conv)} messages")
             try:
-                response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
+                response = self.llm.chat(conv, tools=TOOL_SCHEMAS_CLEAN)
             except Exception as e:
                 import traceback as _tb
                 _tb.print_exc()
@@ -352,10 +352,11 @@ All other messages enter the LLM conversation loop.
                     hint = " Rate limited — retry or switch_model to a different model."
                 elif "timeout" in error_str.lower() or "timed out" in error_str.lower():
                     hint = " API timed out — retry or switch_model to a faster model."
-                response = {"content": f"[API error: {error_str[:80]}.{hint}]", "tool_calls": []}
+                from tical_code.core.llm_interface import ChatResponse
+                response = ChatResponse(content=f"[API error: {error_str[:80]}.{hint}]")
                 logger.warning(f"  LLM call failed: {error_str[:100]}")
-            content = response.get("content", "")
-            tool_calls = response.get("tool_calls", [])
+            content = response.content
+            tool_calls = response.tool_calls
 
             if tool_calls:
                 # Track which tcs got a tool response
@@ -363,22 +364,22 @@ All other messages enter the LLM conversation loop.
 
                 # Add assistant response with tool_calls to conversation
                 formatted_tcs = [
-                    {"id": tc["id"], "type": "function",
-                     "function": {"name": tc["name"],
-                                  "arguments": json.dumps(tc.get("args", {}))}}
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.name,
+                                  "arguments": json.dumps(tc.arguments)}}
                     for tc in tool_calls
                 ]
                 conv.append({
                     "role": "assistant",
-                    "content": response.get("content"),
-                    "reasoning_content": response.get("reasoning_content", ""),
+                    "content": response.content,
+                    "reasoning_content": response.reasoning_content,
                     "tool_calls": formatted_tcs,
                 })
                 loop_messages = []
                 for tc in tool_calls:
-                    name = tc.get("name", "?")
-                    args = tc.get("args", {})
-                    tc_id = tc.get("id", "")
+                    name = tc.name
+                    args = tc.arguments
+                    tc_id = tc.id
                     logger.info(f"  tool call: {name}")
 
                     # Gate write operations — bypass for non-interactive sources
@@ -462,7 +463,7 @@ All other messages enter the LLM conversation loop.
 
                 # Fill missing tool responses FIRST (must be adjacent to tool_calls)
                 for tc in tool_calls:
-                    tc_id = tc.get("id", "")
+                    tc_id = tc.id
                     if tc_id not in responded:
                         conv.append({
                             "role": "tool",
