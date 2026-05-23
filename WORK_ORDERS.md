@@ -1,66 +1,92 @@
-# EITElite 工单列表
+# EITElite 递推工作清单 — Work Orders
 
-每个工单为30分钟可完成的任务。AI 会话读取 `git log --oneline -5` 即可知道从哪里接。
+> 记录需要推进的未完成任务，按优先级和依赖排序。
+> 每完成一项标记 ✅ 并记录 git commit。
 
 ## 状态图例
 
-- ⬜ 未开始
-- 🟡 进行中
+- ❌ 未开始
 - ✅ 已完成
-- ❌ 已取消
+- 🔧 进行中
+- ⏸️ 暂停/阻塞
 
 ---
 
 ## Epic C — LLM Interface Function Calling
 
-C.2 `llm_interface.py` 加 function calling 支持
+**目标：** 将 `unified_worker.py` + `tool_executor.py` 的紧耦合工具执行逻辑重构到 `llm_interface.py`，实现 `chat_with_tools` 多轮循环 + 健壮错误处理。
 
-| # | 状态 | Commit | 描述 |
-|---|------|--------|------|
-| C.2.1 | ⬜ | — | `chat()` 签名加 `tools` 参数，透传到 API request body |
-| C.2.2 | ⬜ | — | 解析 API 响应中 `tool_calls`，返回结构化 `ToolCall` 对象 |
-| C.2.3 | ⬜ | — | 多轮 tool 调用循环（LLM→tool_call→执行→结果喂回→继续） |
-| C.2.4 | ⬜ | — | 错误处理：超时 / 格式异常 / 重试 |
-| C.2.5 | ⬜ | — | `unified_worker` 中 `llm_backend` → `llm_interface` 替换 |
-| C.2.6 | ⬜ | — | 端到端：worker 接收任务 → 调工具 → 返回结果 |
+### C.2.1 chat() 加 tools 参数 ❌
+- `.tickets/C.2.1.md`
+- chat() 加 `tools: Optional[List[Dict]] = None` 参数，tools 直接传 API
+
+### C.2.2 解析 tool_calls 返回 ToolCall ❌
+- `.tickets/C.2.2.md`
+- 解析 API 响应的 tool_calls → `ChatResponse(content, tool_calls=[ToolCall(id, name, args)])`
+
+### C.2.3 多轮 tool 调用循环 ❌
+- `.tickets/C.2.3.md`
+- `chat_with_tools(messages, tools, max_rounds=10, executor=...)` — 循环：调 LLM → 执行 → 喂回
+
+### C.2.4 错误处理 ❌
+- `.tickets/C.2.4.md`
+- 超时 / 非法 tools / HTTP 4xx 不崩、自动重试
+
+### C.2.5 替换 worker 的 llm_backend → llm_interface ❌
+- `.tickets/C.2.5.md`
+- `unified_worker.py` 改 import，适配 `ChatResponse` 数据结构
+
+### C.2.6 端到端验证 ❌
+- `.tickets/C.2.6.md`
+- tical-chat 发消息 → LLM 决定调工具 → 执行 → 返回
 
 ---
 
 ## Epic B — Subagent 重写
 
-B.1 子代理系统，独立 Python 子进程执行
+**目标：** 重写 delegate_task/subagent_result/subagent_list 工具，用子进程隔离代替当前的内存队列。
 
-| # | 状态 | Commit | 描述 |
-|---|------|--------|------|
-| B.1.1 | ⬜ | — | 数据类：`SubAgentTask` + `SubAgentResult` |
-| B.1.2 | ⬜ | — | `_spawn_process`：启动独立 Python 子进程 |
-| B.1.3 | ⬜ | — | 子进程内调 LLM（复用 `llm_interface`） |
-| B.1.4 | ⬜ | — | 子进程内调 `tool_executor` 执行工具 |
-| B.1.5 | ⬜ | — | 子进程 → 父进程结果回传（stdout JSON） |
-| B.1.6 | ⬜ | — | 限制子进程超时 + 内存 |
-| B.1.7 | ⬜ | — | `unified_worker` 接入 `delegate_task` 调用新 subagent |
-| B.1.8 | ⬜ | — | 端到端 + 压力测试 |
+### B.1.1 SubAgent 数据类 ✅
+- `.tickets/B.1.1.md`
+- `SubAgentTask` + `SubAgentResult` 数据类
+
+### B.1.2 _spawn_process 启动子进程 ❌
+- `.tickets/B.1.2.md`
+- 独立 Python 进程跑 subagent worker
+
+### B.1.3 Worker 循环 ❌
+- `.tickets/B.1.3.md`
+- 子进程内：读任务 → LLM → 工具 → 写结果
+
+### B.1.4 超时 / 错误 / 清理 ❌
+- `.tickets/B.1.4.md`
+- signal 超时、异常捕获、清理
+
+### B.1.5 tool_executor 集成 ❌
+- 替换当前 delegate_task/subagent_result/subagent_list 实现
+
+### B.1.6 eitelite_cli submit/result 命令 ❌
+- 命令行列表面向用户的 subagent 提交
+
+### B.1.7 多 worker 并发 ❌
+- 允许最多 N 个并发 subagent
+
+### B.1.8 端到端集成测试 ❌
+- 全链路通过
 
 ---
 
-## 小活 Z
+## Done ✅
 
-| # | 状态 | Commit | 描述 | 预计 |
-|---|------|--------|------|------|
-| Z.1 | ⬜ | — | 删除 `hive.py`（未使用模块） | 5min |
-| Z.2 | ⬜ | — | 跑 EITE benchmark mock（验证 integrity stage） | 15min |
-
----
+| 项目 | Commit | 日期 |
+|---|---|---|
+| tical-code 全量同步 | `76ac153` | 2026-05-23 |
+| 记忆系统升级 | `edb055d` | 2026-05-23 |
+| 一键部署 install.sh | `3fdb5f3` | 2026-05-23 |
+| WORK_ORDERS + .tickets/ | `3fdb5f3` | 2026-05-23 |
 
 ## 当前进度
 
-```
-Epic → C.2 [■■□□□□] 0/6   B.1 [□□□□□□□□] 0/8   Z [□□] 0/2
-```
-
-下一个 AI 工作会话：
-1. 读本文件，找第一个 ⬜ 状态的工单
-2. 读 `git log --oneline -5` 确认上下文
-3. 执行工单
-4. `git commit -m "C.2.1: ..."` 提交
-5. 更新本文件对应状态为 ✅
+- C.2: 6/6 工单已写（C.2.1-2.6）— 等待执行
+- B.1: 4/8 工单已写（B.1.1-1.4）— 缺 B.1.5-1.8
+- 待执行：C.2.1 → C.2.2 → C.2.3 → C.2.4 → C.2.5 → C.2.6
