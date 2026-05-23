@@ -557,12 +557,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "delegate_task",
-            "description": "Delegate a task to a sub-agent for parallel processing.",
+            "description": "Delegate a task to a sub-agent process (runs in background). Returns a task_id immediately; poll subagent_result with the task_id to get the result.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "Task description"},
-                    "timeout": {"type": "integer", "description": "Max seconds to wait", "default": 300}
+                    "task": {"type": "string", "description": "Task description for the sub-agent to accomplish"},
+                    "context": {"type": "string", "description": "Background context / files / constraints for the sub-agent", "default": ""},
+                    "timeout": {"type": "integer", "description": "Max seconds to wait for completion", "default": 120}
                 },
                 "required": ["task"]
             }
@@ -572,7 +573,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "subagent_result",
-            "description": "Get the result of a previously delegated sub-agent task.",
+            "description": "Get the result of a previously delegated sub-agent task. Poll this after delegate_task returns a task_id. Returns 'running' until the sub-agent finishes.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -586,7 +587,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "subagent_list",
-            "description": "List all sub-agent tasks and their statuses.",
+            "description": "List all sub-agent tasks and their current statuses (running/done/error).",
             "parameters": {
                 "type": "object",
                 "properties": {}
@@ -1485,56 +1486,128 @@ def exec_execute_code(args: dict) -> dict:
 
 
 # ============ SubAgent 3 Tools ============
+# B.1.5: Real subprocess-based subagents (replaced SQLite fake impl)
+
+import threading as _subagent_threading
+import uuid as _subagent_uuid
+import time as _subagent_time
+from typing import Any as _SubAny
+
+_subagent_tasks: dict = {}  # task_id -> {status, goal, result?, started}
+_subagent_lock = _subagent_threading.Lock()
+
 
 def exec_delegate_task(args: dict) -> dict:
-    """Store a delegated task for processing."""
-    import json, uuid, time as _time
+    """Spawn a sub-agent process to handle a task asynchronously."""
     try:
-        task = args["task"]
-        task_id = uuid.uuid4().hex[:12]
-        db_path = os.path.expanduser("~/.tical-code/subagents.db")
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        import sqlite3
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE IF NOT EXISTS subagent_tasks (id TEXT PRIMARY KEY, description TEXT, status TEXT, result TEXT, created REAL)")
-        conn.execute("INSERT INTO subagent_tasks (id, description, status, created) VALUES (?, ?, ?, ?)",
-                     (task_id, task, "pending", _time.time()))
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "pending"}
+        from tical_code.core.subagent_interface import SubAgentTask, run_subagent
+
+        task_desc = args.get("task", "")
+        context = args.get("context", "")
+        timeout = args.get("timeout", 120)
+
+        if not task_desc:
+            return {"error": "task is required"}
+
+        task_id = _subagent_uuid.uuid4().hex[:12]
+        now = _subagent_time.time()
+
+        with _subagent_lock:
+            _subagent_tasks[task_id] = {
+                "status": "running",
+                "goal": task_desc[:60],
+                "started": now,
+            }
+
+        # Background thread: run subagent, store result when done
+        def _worker(tid: str, t: _SubAny):
+            try:
+                result = run_subagent(t)
+                with _subagent_lock:
+                    _subagent_tasks[tid] = {
+                        "status": "done" if result.success else "error",
+                        "goal": t.goal[:60],
+                        "result": {
+                            "success": result.success,
+                            "output": result.output,
+                            "error": result.error,
+                            "tool_calls_made": result.tool_calls_made,
+                            "elapsed_sec": result.elapsed_sec,
+                        },
+                        "started": _subagent_tasks.get(tid, {}).get("started", _subagent_time.time()),
+                    }
+            except Exception as e:
+                with _subagent_lock:
+                    _subagent_tasks[tid] = {
+                        "status": "error",
+                        "goal": t.goal[:60] if hasattr(t, "goal") else "?",
+                        "result": {"error": str(e)},
+                        "started": _subagent_tasks.get(tid, {}).get("started", _subagent_time.time()),
+                    }
+
+        task = SubAgentTask(goal=task_desc, context=context, timeout_sec=timeout)
+        t = _subagent_threading.Thread(target=_worker, args=(task_id, task), daemon=True)
+        t.start()
+
+        return {"task_id": task_id, "status": "running"}
     except Exception as e:
         return {"error": f"Delegate failed: {e}"}
 
+
 def exec_subagent_result(args: dict) -> dict:
-    """Get result of a delegated task."""
-    import sqlite3
+    """Get result of a sub-agent task. Poll until status != running."""
     try:
-        task_id = args["task_id"]
-        db_path = os.path.expanduser("~/.tical-code/subagents.db")
-        conn = sqlite3.connect(db_path)
-        cur = conn.execute("SELECT id, description, status, result FROM subagent_tasks WHERE id=?", (task_id,))
-        row = cur.fetchone()
-        conn.close()
-        if row:
-            return {"task_id": row[0], "description": row[1], "status": row[2], "result": row[3]}
-        return {"error": f"Task {task_id} not found"}
+        task_id = args.get("task_id", "")
+        if not task_id:
+            return {"error": "task_id is required"}
+
+        with _subagent_lock:
+            entry = _subagent_tasks.get(task_id)
+
+        if not entry:
+            return {"error": f"Task {task_id} not found", "status": "unknown"}
+
+        if entry["status"] == "running":
+            return {
+                "task_id": task_id,
+                "status": "running",
+                "goal": entry.get("goal", ""),
+            }
+
+        status = entry["status"]  # "done" or "error"
+        result = entry.get("result", {})
+        return {
+            "task_id": task_id,
+            "status": "completed" if status == "done" else "failed",
+            "success": bool(result.get("success")) if isinstance(result, dict) else False,
+            "output": result.get("output", "") if isinstance(result, dict) else str(result),
+            "error": result.get("error", "") if isinstance(result, dict) else "",
+            "tool_calls_made": result.get("tool_calls_made", 0) if isinstance(result, dict) else 0,
+        }
     except Exception as e:
         return {"error": f"Subagent result failed: {e}"}
 
+
 def exec_subagent_list(args: dict) -> dict:
     """List all sub-agent tasks."""
-    import sqlite3
     try:
-        db_path = os.path.expanduser("~/.tical-code/subagents.db")
-        conn = sqlite3.connect(db_path)
-        cur = conn.execute("SELECT id, description, status FROM subagent_tasks ORDER BY rowid DESC")
-        tasks = [{"id": r[0], "description": r[1][:60], "status": r[2]} for r in cur.fetchall()]
-        conn.close()
+        with _subagent_lock:
+            items = sorted(
+                _subagent_tasks.items(),
+                key=lambda x: x[1].get("started", 0),
+                reverse=True,
+            )
+            tasks = [
+                {
+                    "id": tid,
+                    "goal": info.get("goal", "")[:60],
+                    "status": info["status"],
+                }
+                for tid, info in items
+            ]
         return {"tasks": tasks}
     except Exception as e:
         return {"error": f"Subagent list failed: {e}"}
-
-# ============ Clarify 1 Tool ============
 
 def exec_clarify_goal(args: dict) -> dict:
     """Analyze a goal for ambiguity, missing info, or high risk."""

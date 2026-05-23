@@ -80,7 +80,7 @@ class Worker:
 
         # LLM backend
         self.llm = create_llm_backend(
-            model=cfg.get("ai_model", "deepseek-v4-flash"),
+            model=cfg.get("ai_model", "deepseek-chat"),
             api_key=cfg.get("ai_key", ""),
             base_url=cfg.get("ai_endpoint", ""),
         )
