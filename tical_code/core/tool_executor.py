@@ -228,23 +228,25 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "memory_save",
-            "description": "Save a piece of persistent memory to file.",
+            "name": "memory",
+            "description": "Manage persistent memory. 'add' saves a new fact, 'replace' updates an existing one, 'remove' deletes it. Target 'user' for user preferences/profile, 'memory' for environment/project facts. Memory is auto-loaded into context on every turn.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "key": {"type": "string", "description": "Memory key name"},
-                    "value": {"type": "string", "description": "Memory value"}
+                    "action": {"type": "string", "enum": ["add", "replace", "remove"], "description": "add=new fact, replace=update existing, remove=delete"},
+                    "target": {"type": "string", "enum": ["memory", "user"], "description": "memory=environment facts, user=user preferences"},
+                    "content": {"type": "string", "description": "Memory content text (for add/replace)"},
+                    "old_text": {"type": "string", "description": "Unique substring to identify entry for replace/remove"}
                 },
-                "required": ["key", "value"]
+                "required": ["action", "target", "content"]
             }
         }
     },
     {
         "type": "function",
         "function": {
-            "name": "memory_load",
-            "description": "Read all saved persistent memories.",
+            "name": "memory_list",
+            "description": "List all saved memories grouped by target type with usage stats.",
             "parameters": {
                 "type": "object",
                 "properties": {}
@@ -788,31 +790,145 @@ def exec_file_write(args: dict, base_dir: str = "") -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-def exec_memory_save(args: dict, base_dir: str = "") -> dict:
-    key = args.get("key", "")
-    value = args.get("value", "")
-    if not key:
-        return {"error": "Key cannot be empty"}
-    mem_file = Path(base_dir or WORKSPACE) / "memory.json"
-    mem = {}
-    if mem_file.exists():
-        try:
-            mem = json.loads(mem_file.read_text())
-        except Exception:
-            mem = {}
-    mem.setdefault("entries", {})[key] = {"value": value, "time": time.time()}
-    mem_file.write_text(json.dumps(mem, ensure_ascii=False, indent=2))
-    return {"ok": True, "key": key}
+_MEMORY_FILE = "~/.tical-code/memory.json"
+_MEMORY_MAX_CHARS = 2200
 
-def exec_memory_load(args: dict = None, base_dir: str = "") -> dict:
-    mem_file = Path(base_dir or WORKSPACE) / "memory.json"
-    if not mem_file.exists():
-        return {"entries": {}}
+def _load_memory_store(target: str = "memory") -> list:
+    """Load memory entries for a target type."""
+    import json as _json
+    mem_file = os.path.expanduser(_MEMORY_FILE)
     try:
-        mem = json.loads(mem_file.read_text())
-        return {"entries": mem.get("entries", {})}
+        if os.path.exists(mem_file):
+            data = _json.loads(open(mem_file).read())
+            return data.get(target, data.get("entries", {}).get(target, []))
     except Exception:
-        return {"entries": {}}
+        pass
+    return []
+
+def _save_memory_store(target: str, entries: list):
+    """Save memory entries for a target type."""
+    import json as _json
+    mem_file = os.path.expanduser(_MEMORY_FILE)
+    data = {"memory": [], "user": []}
+    try:
+        if os.path.exists(mem_file):
+            existing = _json.loads(open(mem_file).read())
+            data["memory"] = existing.get("memory", existing.get("entries", {}).get("memory", []))
+            data["user"] = existing.get("user", existing.get("entries", {}).get("user", []))
+    except Exception:
+        pass
+    data[target] = entries
+    os.makedirs(os.path.dirname(mem_file), exist_ok=True)
+    with open(mem_file, "w") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _memory_total_chars(target: str = None) -> int:
+    """Count total chars across memory entries."""
+    total = 0
+    for t in (["memory", "user"] if target is None else [target]):
+        for e in _load_memory_store(t):
+            total += len(e.get("content", ""))
+    return total
+
+def exec_memory(args: dict, base_dir: str = "") -> dict:
+    """Structured memory: add/replace/remove with target types."""
+    action = args.get("action", "add")
+    target = args.get("target", "memory")
+    content = args.get("content", "").strip()
+    old_text = args.get("old_text", "")
+    
+    if target not in ("memory", "user"):
+        return {"error": f"Invalid target: {target}. Use 'memory' or 'user'."}
+    
+    entries = _load_memory_store(target)
+    
+    if action == "add":
+        if not content:
+            return {"error": "content required for add"}
+        # Check size limit
+        if _memory_total_chars() + len(content) > _MEMORY_MAX_CHARS:
+            # Auto-cleanup: remove oldest entries until fit
+            entries.sort(key=lambda e: e.get("ts", 0))
+            while _memory_total_chars() + len(content) > _MEMORY_MAX_CHARS * 0.9 and entries:
+                removed = entries.pop(0)
+                logger.info(f"[memory] auto-cleanup removed: {removed.get('content','')[:40]}")
+            _save_memory_store(target, entries)
+        entries.append({
+            "content": content,
+            "ts": time.time(),
+            "source": "worker",
+        })
+        _save_memory_store(target, entries)
+        usage = _memory_total_chars()
+        return {"ok": True, "action": "add", "target": target, "usage": f"{usage}/{_MEMORY_MAX_CHARS}"}
+    
+    elif action == "replace":
+        if not old_text:
+            return {"error": "old_text required for replace"}
+        if not content:
+            return {"error": "content required for replace"}
+        found = False
+        for i, e in enumerate(entries):
+            if old_text in e.get("content", ""):
+                entries[i] = {"content": content, "ts": time.time(), "source": "worker"}
+                found = True
+                break
+        if not found:
+            return {"error": f"No entry matching '{old_text}' found in {target}"}
+        _save_memory_store(target, entries)
+        return {"ok": True, "action": "replace", "target": target}
+    
+    elif action == "remove":
+        if not old_text:
+            # Remove all entries in target
+            count = len(entries)
+            _save_memory_store(target, [])
+            return {"ok": True, "action": "remove", "target": target, "removed": count}
+        found = False
+        for i, e in enumerate(entries):
+            if old_text in e.get("content", ""):
+                removed = entries.pop(i)
+                _save_memory_store(target, entries)
+                return {"ok": True, "action": "remove", "target": target, "removed": removed.get("content", "")[:60]}
+        return {"error": f"No entry matching '{old_text}' found in {target}"}
+    
+    return {"error": f"Unknown action: {action}"}
+
+def exec_memory_list(args: dict = None, base_dir: str = "") -> dict:
+    """List all memories grouped by target with stats."""
+    mem = {"memory": _load_memory_store("memory"), "user": _load_memory_store("user")}
+    total = len(mem["memory"]) + len(mem["user"])
+    chars = _memory_total_chars()
+    result = {
+        "total_entries": total,
+        "total_chars": chars,
+        "max_chars": _MEMORY_MAX_CHARS,
+        "usage_pct": round(chars / _MEMORY_MAX_CHARS * 100, 1),
+        "memory": mem["memory"],
+        "user": mem["user"],
+    }
+    # Truncate content in response
+    for t in ("memory", "user"):
+        for e in result[t]:
+            e["content"] = e.get("content", "")[:200]
+    return result
+
+def get_memory_injection() -> str:
+    """Return memory entries formatted for system prompt injection."""
+    mem = _load_memory_store("memory")
+    user = _load_memory_store("user")
+    parts = []
+    if mem:
+        parts.append("MEMORY (environment facts):")
+        for i, e in enumerate(mem):
+            parts.append(f"§ {e.get('content', '')[:160]}")
+    if user:
+        parts.append("USER PROFILE:")
+        for i, e in enumerate(user):
+            parts.append(f"§ {e.get('content', '')[:160]}")
+    if parts:
+        return "\n".join(parts)
+    return ""
 
 def exec_conv_search(args: dict) -> dict:
     try:
@@ -1598,8 +1714,10 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
-        "memory_save": lambda a: exec_memory_save(a, base_dir),
-        "memory_load": lambda a: exec_memory_load(a, base_dir),
+        "memory": lambda a: exec_memory(a, base_dir),
+        "memory_list": lambda a: exec_memory_list(a, base_dir),
+        "memory_save": lambda a: exec_memory(a, base_dir),  # backward compat
+        "memory_load": lambda a: exec_memory_list(a, base_dir),  # backward compat
         "state_save": lambda a: exec_state_save(a, base_dir),
         "conv_search": exec_conv_search,
         "chat_send": exec_chat_send,

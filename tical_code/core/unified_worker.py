@@ -317,8 +317,13 @@ All other messages enter the LLM conversation loop.
         self.loop_detector.reset()
         self._consecutive_blocks = 0
         
-        # Init conversation with system prompt
-        conv = [{"role": "system", "content": self.system_prompt}]
+        # Init conversation with system prompt + memory injection
+        from tical_code.core.tool_executor import get_memory_injection as _mem_inject
+        _mem_text = _mem_inject()
+        _sys = self.system_prompt
+        if _mem_text:
+            _sys += "\n\n═══════════════════════════\nPERSISTENT MEMORY (loaded fresh each turn):\n" + _mem_text
+        conv = [{"role": "system", "content": _sys}]
         # Load session history
         session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
         history = self.sessions.load_session(session_id)
@@ -430,6 +435,20 @@ All other messages enter the LLM conversation loop.
                     # Module 4: Record action
                     verified = result.get("ok", False) or result.get("exit_code") == 0
                     self.reporter.record_action(name, args, result, verified=verified)
+                    
+                    # Auto-save: save_important results as memory
+                    if verified and name in ("execute_code", "web_search", "web_fetch", "memory_fts_search"):
+                        try:
+                            from tical_code.core.tool_executor import exec_memory as _exec_mem
+                            result_text = str(result.get("output", result.get("content", "")))[:200]
+                            if result_text.strip():
+                                _exec_mem({
+                                    "action": "add",
+                                    "target": "memory",
+                                    "content": f"[{name}] {args.get('code', args.get('query', ''))[:80]}: {result_text[:80]}",
+                                })
+                        except Exception:
+                            pass
 
                     # Module 3: Record & detect loop
                     self.loop_detector.record(name, args, result)
