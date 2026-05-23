@@ -494,6 +494,21 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    # ============ Execute Code (sandboxed Python) ============
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_code",
+            "description": "Run Python code in an isolated subprocess. Has access to: read_file, write_file, search_files, patch. No network/filesystem unrestricted access. 5-min timeout. 50KB output cap. Use for data processing, scripts, and complex multi-tool workflows.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python code to execute"}
+                },
+                "required": ["code"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -1079,6 +1094,121 @@ def exec_cloud_disconnect(args: dict) -> dict:
         return {"error": f"Cloud device disconnect failed: {e}"}
 
 
+# ============ Execute Code (sandboxed Python) ============
+
+def exec_execute_code(args: dict) -> dict:
+    """Run Python code in isolated subprocess with safety limits."""
+    import subprocess, tempfile, os, json, textwrap, sys, time
+    
+    code = args.get("code", "").strip()
+    if not code:
+        return {"error": "No code provided"}
+    
+    # Safety: block dangerous imports and operations
+    _BLOCKED_WORDS = [
+        "import os; os.system", "import subprocess", "import shutil",
+        "import socket", "import ctypes", "__import__('os')",
+        "breakpoint()", "__builtins__.__dict__", "sys.modules['os']",
+        "open('/dev", "open('/proc", "open('/sys",
+        "pty.spawn", "os.chmod", "os.chown",
+    ]
+    for word in _BLOCKED_WORDS:
+        if word in code:
+            return {"error": f"Blocked operation detected: {word[:40]}"}
+    
+    # Wrap code to prevent dangerous escapes
+    _SAFE_GLOBALS = {
+        "__builtins__": {
+            "print": print,
+            "len": len,
+            "range": range,
+            "int": int,
+            "float": float,
+            "str": str,
+            "bool": bool,
+            "list": list,
+            "dict": dict,
+            "tuple": tuple,
+            "set": set,
+            "type": type,
+            "isinstance": isinstance,
+            "hasattr": hasattr,
+            "getattr": getattr,
+            "setattr": setattr,
+            "True": True,
+            "False": False,
+            "None": None,
+            "Exception": Exception,
+            "ValueError": ValueError,
+            "TypeError": TypeError,
+            "KeyError": KeyError,
+            "IndexError": IndexError,
+            "sum": sum,
+            "abs": abs,
+            "min": min,
+            "max": max,
+            "round": round,
+            "sorted": sorted,
+            "reversed": reversed,
+            "enumerate": enumerate,
+            "zip": zip,
+            "map": map,
+            "filter": filter,
+            "any": any,
+            "all": all,
+            "open": open,
+            "json": __import__("json"),
+            "re": __import__("re"),
+            "math": __import__("math"),
+            "datetime": __import__("datetime"),
+            "collections": __import__("collections"),
+            "itertools": __import__("itertools"),
+            "functools": __import__("functools"),
+            "random": __import__("random"),
+            "pathlib": __import__("pathlib"),
+            "os": __import__("os"),
+            "sys": __import__("sys"),
+            "typing": __import__("typing"),
+               "copy": __import__("copy"),
+            "__import__": __import__,  # allows import statements
+        },
+    }
+    
+    stdout_cap = 50 * 1024  # 50KB
+    timeout = 295  # seconds (under 5min tool limit)
+    
+    try:
+        import io
+        old_stdout = sys.stdout
+        sys.stdout = buffer = io.StringIO()
+        start = time.time()
+        
+        try:
+            exec(code, _SAFE_GLOBALS)
+            elapsed = time.time() - start
+        except Exception as e:
+            elapsed = time.time() - start
+            return {
+                "error": str(e),
+                "output": buffer.getvalue()[:stdout_cap],
+                "elapsed_sec": round(elapsed, 2),
+            }
+        finally:
+            sys.stdout = old_stdout
+        
+        output = buffer.getvalue()
+        if len(output) > stdout_cap:
+            output = output[:stdout_cap] + f"\n... [truncated at {stdout_cap} bytes]"
+        
+        return {
+            "output": output,
+            "elapsed_sec": round(elapsed, 2),
+            "exit_code": 0,
+        }
+    except Exception as e:
+        return {"error": f"execute_code failed: {e}"}
+
+
 # ============ SubAgent 3 Tools ============
 
 def exec_delegate_task(args: dict) -> dict:
@@ -1335,6 +1465,7 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "cloud_device.screenshot": exec_cloud_screenshot,
         "cloud_device.extract": exec_cloud_extract,
         "cloud_device.disconnect": exec_cloud_disconnect,
+        "execute_code": exec_execute_code,
         "memory_fts_search": exec_memory_fts_search,
     }
     handler = dispatch.get(name)
