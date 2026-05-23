@@ -40,7 +40,7 @@
 | 补丁编辑 | ✅ | ✅ | patch_file |
 | 聊天发送 | ✅ | ✅ | chat_send (tical-chat) |
 
-**✅ 特有工具：** cloud_device.*（playwright 浏览器自动化）— Hermes 没有等价物
+**✅ 特有工具：** cloud_device.*（playwright 浏览器自动化）+ execute_code（安全 Python 沙箱）— Hermes 没有等价物
 
 ### ✅ 3. 记忆系统 (80% 达到)
 | 能力 | Hermes | EITElite | 备注 |
@@ -117,17 +117,20 @@
 | webhook 订阅 | ✅ | ❌ | — |
 
 **用户意见：** EITElite/tical-code 自身已有技能/知识体系（prompt.py 构建工具提示词），不需要 SKILL.md 方式。插件系统已就位。
+### ✅ 9. CLI / 用户界面 (部分实现)
 
-### ❌ 9. CLI / 用户界面
 | 能力 | Hermes | EITElite | 备注 |
 |------|--------|----------|------|
-| TUI 交互 | ✅ | ❌ | 无 cli.py |
-| 斜杠命令 | ✅ | ❌ | /help, /model 等 |
-| 会话管理 | ✅ | ❌ | sessions list/export/resume |
-| 配置文件编辑 | ✅ | ❌ | config edit/set/get |
-| 可视化指示器 | ✅ | ❌ | spinner, status bar, theme |
-| 历史回滚 | ✅ | ❌ | /rollback 检查点 |
-| 语音模式 | ✅ | ❌ | STT/TTS |
+| TUI 交互 | ✅ | ❌ | EITElite 无 TUI |
+| 斜杠命令 | ✅ | ❌ | — |
+| 会话管理 | ✅ | ❌ | — |
+| 配置文件编辑 | ✅ | ❌ | — |
+| 可视化指示器 | ✅ | ❌ | — |
+| 历史回滚 | ✅ | ❌ | — |
+| 语音模式 | ✅ | ❌ | — |
+| 命令行运维 | ✅ | ✅ | `eitelite-cli` status/log/prompt/restart/version |
+| systemd 集成 | ✅ | ✅ | 系统化服务管理 |
+| journalctl 日志 | ✅ | ✅ | 标准系统日志 |
 
 ### ❌ 10. 基础设施
 | 能力 | Hermes | EITElite | 备注 |
