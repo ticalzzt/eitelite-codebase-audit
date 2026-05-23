@@ -998,7 +998,7 @@ def exec_cron_cancel(args: dict) -> dict:
 def exec_xurl_post(args):
     import asyncio
     try:
-        from plugins.xurl import XUrlPlugin
+        from tical_code.plugins.xurl import XUrlPlugin
         xp = XUrlPlugin()
         result = asyncio.run(xp.post_tweet(args))
         if result.success:
@@ -1010,7 +1010,7 @@ def exec_xurl_post(args):
 def exec_xurl_reply(args):
     import asyncio
     try:
-        from plugins.xurl import XUrlPlugin
+        from tical_code.plugins.xurl import XUrlPlugin
         xp = XUrlPlugin()
         result = asyncio.run(xp.reply_tweet(args))
         if result.success:
@@ -1022,7 +1022,7 @@ def exec_xurl_reply(args):
 def exec_xurl_timeline(args):
     import asyncio
     try:
-        from plugins.xurl import XUrlPlugin
+        from tical_code.plugins.xurl import XUrlPlugin
         xp = XUrlPlugin()
         result = asyncio.run(xp.get_timeline(args))
         if result.success:
