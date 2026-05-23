@@ -303,10 +303,13 @@ All other messages enter the LLM conversation loop.
         if hasattr(self, "eite") and self.eite:
             self.eite.reset_session()
 
-        conv = [
-            {"role": "system", "content": self.system_prompt},
-        ]
-        # Module 1: Load previous session context
+    def _process(self, msg: Message) -> None:
+        """Process a single incoming message — guaranteed to produce a reply."""
+        # Deadlock busters: reset all guards for each incoming message
+        self.gate.clear_pending()
+        self.loop_detector.reset()
+        self._consecutive_blocks = 0
+        
         session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
         history = self.sessions.load_session(session_id)
         conv.extend(history)
@@ -318,7 +321,23 @@ All other messages enter the LLM conversation loop.
             if self.compactor.needs_compaction(conv):
                 conv = self.compactor.compact(conv, lambda msgs: {"content": ""})
                 logger.info(f"[worker] context compacted: {len(conv)} messages")
-            response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
+            try:
+                response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
+            except Exception as e:
+                import traceback as _tb
+                _tb.print_exc()
+                error_str = str(e)
+                hint = ""
+                if "401" in error_str or "402" in error_str or "403" in error_str:
+                    hint = " API key error — use switch_model to set a valid key."
+                elif "400" in error_str:
+                    hint = " Model may be unavailable — use list_models + switch_model to change."
+                elif "429" in error_str or "rate" in error_str.lower():
+                    hint = " Rate limited — retry or switch_model to a different model."
+                elif "timeout" in error_str.lower() or "timed out" in error_str.lower():
+                    hint = " API timed out — retry or switch_model to a faster model."
+                response = {"content": f"[API error: {error_str[:80]}.{hint}]", "tool_calls": []}
+                logger.warning(f"  LLM call failed: {error_str[:100]}")
             content = response.get("content", "")
             tool_calls = response.get("tool_calls", [])
 
@@ -346,8 +365,8 @@ All other messages enter the LLM conversation loop.
                     tc_id = tc.get("id", "")
                     logger.info(f"  tool call: {name}")
 
-                    # Gate write operations
-                    if self.gate.should_confirm(name, args, msg.source):
+                    # Gate write operations — bypass for non-interactive sources
+                    if self.gate.should_confirm(name, args, msg.source) and msg.source in ("telegram",):
                         # Check if LLM just confirmed this exact proposal
                         pending = self.gate.get_pending_action()
                         if pending and pending["tool_name"] == name and pending["args"] == args:
@@ -370,6 +389,14 @@ All other messages enter the LLM conversation loop.
                         result = self.eite.verify_tool_result(name, args, result)
                         logger.info(f"  verify {name}: {result.get('verified')} ({result.get('verify_detail', '')})")
                         if not result.get("verified"):
+                            self._consecutive_blocks += 1
+                            if self._consecutive_blocks >= 2:
+                                conv.append({
+                                    "role": "system",
+                                    "content": f"[DEADLOCK] {name} keeps getting blocked. STOP trying tools and reply directly to the user with what you have."
+                                })
+                                logger.warning(f"  deadlock break: {self._consecutive_blocks} consecutive blocks")
+                                break  # exit tool loop, force reply
                             conv.append({
                                 "role": "tool",
                                 "tool_call_id": tc_id,
@@ -377,6 +404,8 @@ All other messages enter the LLM conversation loop.
                             })
                             responded.add(tc_id)
                             continue
+                        else:
+                            self._consecutive_blocks = 0
                     if not formatted:
                         formatted = json.dumps(result, ensure_ascii=False)[:500]
 
@@ -397,6 +426,8 @@ All other messages enter the LLM conversation loop.
                     if loop_result:
                         loop_messages.append(loop_result["message"])
                         if loop_result["level"] == "critical":
+                            self.loop_detector.reset()
+                            logger.info("  loop critical — detector reset")
                             break
 
                 # Fill missing tool responses FIRST (must be adjacent to tool_calls)
