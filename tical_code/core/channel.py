@@ -149,16 +149,14 @@ class TicalChatChannel(Channel):
                         content=m.get("content", ""),
                         source="tical-chat",
                         raw=m))
-                if msgs:  # Only return if we got messages, otherwise try next endpoint
-                    return msgs
-                continue  # Empty result, try next endpoint
+                return msgs  # Response received (empty or not) = success
             except (ConnectionError, ConnectionRefusedError, urllib.error.URLError, TimeoutError) as e:
                 logger.warning(f"chat_poll failed on {url}: {e}")
                 continue
             except Exception as e:
                 logger.warning(f"chat_poll error on {url}: {e}")
                 continue
-        logger.error("chat_poll: all endpoints failed")
+        logger.warning("chat_poll: all endpoints unreachable")
         return []
 
     def _send(self, response: Response) -> bool:
