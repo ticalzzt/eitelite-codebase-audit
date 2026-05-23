@@ -509,6 +509,48 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    # ============ Model Switch / Self Restart ============
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_model",
+            "description": "Switch LLM model at runtime. Provide provider (deepseek/qwen/openai/openrouter) + model name, or custom base_url + api_key. No restart needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {"type": "string", "description": "Model name, e.g. deepseek-v4-flash, qwen-plus, gpt-4o"},
+                    "provider": {"type": "string", "description": "Built-in provider: deepseek, qwen, openai, openrouter"},
+                    "api_key": {"type": "string", "description": "API key (uses env var if not provided)"},
+                    "base_url": {"type": "string", "description": "Custom base URL for custom provider"}
+                },
+                "required": ["model"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_models",
+            "description": "List supported LLM providers and their default models.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "self_restart",
+            "description": "Restart the worker. Sends SIGTERM — systemd auto-restarts. Use after model switch for clean state.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "description": "Restart reason"}
+                }
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -1094,6 +1136,119 @@ def exec_cloud_disconnect(args: dict) -> dict:
         return {"error": f"Cloud device disconnect failed: {e}"}
 
 
+# ============ Model Switch ============
+
+_executor_llm = None  # Set by unified_worker at startup
+_pending_model_switch = None  # {model, api_key, base_url} set by switch_model
+
+
+def exec_switch_model(args: dict) -> dict:
+    """Switch LLM model at runtime. Updates _executor_llm global."""
+    global _executor_llm, _pending_model_switch
+    import os
+    try:
+        model = args.get("model", "")
+        if not model:
+            return {"error": "model required"}
+        
+        provider = args.get("provider", "").lower()
+        api_key = args.get("api_key", "")
+        base_url = args.get("base_url", "")
+        
+        # Built-in provider shortcuts
+        providers = {
+            "deepseek": {"base_url": "https://api.deepseek.com/v1", "key_env": "DEEPSEEK_API_KEY"},
+            "qwen": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "key_env": "QWEN_API_KEY"},
+            "openai": {"base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY"},
+            "openrouter": {"base_url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY"},
+            "mimo": {"base_url": "https://token-plan-sgp.xiaomimimo.com/v1", "key_env": "MIMO_API_KEY"},
+        }
+        
+        if provider and provider in providers:
+            info = providers[provider]
+            if not base_url:
+                base_url = info["base_url"]
+            if not api_key:
+                api_key = os.environ.get(info["key_env"], "")
+        
+        # If no api_key from args or env, try current backend key
+        if not api_key and _executor_llm:
+            api_key = getattr(_executor_llm, "_api_key", "")
+        if not api_key:
+            # Last resort: try config files
+            from tical_code.core.llm_backend import _load_configs
+            configs = _load_configs()
+            if configs:
+                cfg, src = configs[0]
+                api_key = cfg.get("ai_key", "")
+                if not base_url:
+                    base_url = cfg.get("ai_endpoint", "")
+        
+        if not api_key:
+            return {"error": "No API key found. Provide api_key or set env var."}
+        if not base_url:
+            return {"error": "No base_url. Provide base_url or use a provider name."}
+        
+        # Store pending switch
+        _pending_model_switch = {
+            "model": model,
+            "api_key": api_key,
+            "base_url": base_url,
+        }
+        
+        # Apply immediately if backend exists
+        if _executor_llm:
+            from tical_code.core.llm_backend import OpenAIBackend
+            if isinstance(_executor_llm, OpenAIBackend):
+                result = _executor_llm.set_model(model, api_key, base_url)
+                _pending_model_switch = None
+                return result
+        
+        return {
+            "ok": True,
+            "model": model,
+            "base_url": base_url,
+            "status": "pending (worker will pick up on next call)"
+        }
+    except Exception as e:
+        return {"error": f"switch_model failed: {e}"}
+
+
+def exec_list_models(args: dict) -> dict:
+    """List available built-in providers."""
+    global _executor_llm
+    try:
+        if _executor_llm and hasattr(_executor_llm, "list_models"):
+            models = _executor_llm.list_models()
+            return {"ok": True, "models": models}
+        providers = [
+            {"provider": "deepseek", "base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-v4-flash"},
+            {"provider": "qwen", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "default_model": "qwen-plus"},
+            {"provider": "openai", "base_url": "https://api.openai.com/v1", "default_model": "gpt-4o"},
+            {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "default_model": "openai/gpt-4o"},
+            {"provider": "mimo", "base_url": "https://token-plan-sgp.xiaomimimo.com/v1", "default_model": "gemini-2.5-pro"},
+        ]
+        return {"ok": True, "models": providers}
+    except Exception as e:
+        return {"error": f"list_models failed: {e}"}
+
+
+def exec_self_restart(args: dict) -> dict:
+    """Restart the worker process. Graceful exit — systemd auto-restarts."""
+    import os, signal
+    try:
+        reason = args.get("reason", "user request")
+        pid = os.getpid()
+        logger = logging.getLogger("tical-code.executor")
+        logger.warning(f"Self-restart triggered: {reason} (PID {pid})")
+        # Schedule exit after response is sent
+        import threading
+        threading.Timer(1.0, lambda: os.kill(pid, signal.SIGTERM)).start()
+        return {"ok": True, "message": f"Restart scheduled: {reason}", "pid": pid}
+    except Exception as e:
+        return {"error": f"self_restart failed: {e}"}
+
+
 # ============ Execute Code (sandboxed Python) ============
 
 def exec_execute_code(args: dict) -> dict:
@@ -1465,6 +1620,9 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "cloud_device.screenshot": exec_cloud_screenshot,
         "cloud_device.extract": exec_cloud_extract,
         "cloud_device.disconnect": exec_cloud_disconnect,
+        "switch_model": exec_switch_model,
+        "list_models": exec_list_models,
+        "self_restart": exec_self_restart,
         "execute_code": exec_execute_code,
         "memory_fts_search": exec_memory_fts_search,
     }

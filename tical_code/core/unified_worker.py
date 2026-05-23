@@ -81,6 +81,10 @@ class Worker:
             base_url=cfg.get("ai_endpoint", ""),
         )
 
+        # Expose LLM to tool_executor for switch_model
+        from tical_code.core import tool_executor as _te
+        _te._executor_llm = self.llm
+
         # System prompt
         # Pending task file for cross-poll continuation
         self._pending_task_file = Path(cfg.get("workspace", ".")) / ".pending_task.json"

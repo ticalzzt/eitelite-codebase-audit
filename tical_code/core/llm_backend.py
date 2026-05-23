@@ -49,8 +49,46 @@ class OpenAIBackend(LLMBackend):
         self._fallback_model = os.environ.get("LLM_FALLBACK_MODEL", "")
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
+        self._providers = {
+            "deepseek": {"base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-v4-flash"},
+            "qwen": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "default_model": "qwen-plus"},
+            "openai": {"base_url": "https://api.openai.com/v1", "default_model": "gpt-4o"},
+            "openrouter": {"base_url": "https://openrouter.ai/api/v1", "default_model": "openai/gpt-4o"},
+        }
         logger.info(f"OpenAI backend: model={model} url={base_url}"
                     + (f" fallback={self._fallback_model}" if self._fallback_model else ""))
+
+    def get_model(self) -> str:
+        """Return current model name."""
+        return self._model
+
+    def get_provider(self) -> str:
+        """Return current provider type."""
+        for name, info in self._providers.items():
+            if info["base_url"] == self._base_url or self._base_url.startswith(info["base_url"].rstrip("/").split("/")[2]):
+                return name
+        return "custom"
+
+    def set_model(self, model: str, api_key: str = None, base_url: str = None):
+        """Switch model at runtime. Can change provider, key, and endpoint."""
+        old = f"{self._model} @ {self._base_url[:40]}..."
+        self._model = model
+        if api_key:
+            self._api_key = api_key
+        if base_url:
+            self._base_url = base_url.rstrip("/")
+            self._is_mimo = "mimo" in base_url.lower()
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+        logger.info(f"Model switched: {old} → {self._model} @ {self._base_url[:50]}...")
+        return {"ok": True, "model": self._model, "provider": self.get_provider(), "base_url": self._base_url}
+
+    def list_models(self) -> list:
+        """List available built-in providers and models."""
+        result = []
+        for name, info in self._providers.items():
+            result.append({"provider": name, "base_url": info["base_url"], "default_model": info["default_model"]})
+        return result
 
     def _do_call(self, messages, tools, max_tokens):
         """Call LLM with retry backoff + circuit breaker + fallback."""
