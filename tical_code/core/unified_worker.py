@@ -544,10 +544,12 @@ All other messages enter the LLM conversation loop.
                     if warnings:
                         logger.warning(f"EITE unverified claims: {warnings}")
 
-                # Module 4: Scan for violations — log only, don't append to reply
+                # Module 4: Scan for violations — append correction to reply
                 violations = self.reporter.scan_reply(reply)
                 if violations:
+                    corrections = self.reporter.format_corrections(violations)
                     logger.warning(f"trust violations: {violations}")
+                    reply += f"\n\n{corrections}"
 
                 # Check for continuation hint — only if explicit "I still need to"
                 if "I still need to" in reply:
