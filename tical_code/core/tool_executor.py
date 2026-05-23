@@ -406,6 +406,93 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    # ============ Cloud Device (playwright-based browser) ============
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_device.navigate",
+            "description": "Open a URL in the cloud device browser (playwright).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to navigate to"},
+                    "device_id": {"type": "string", "description": "Optional device identifier"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_device.click",
+            "description": "Click an element in the cloud device browser by CSS selector.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector"},
+                    "device_id": {"type": "string", "description": "Optional device identifier"}
+                },
+                "required": ["selector"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_device.type",
+            "description": "Type text into an input field in the cloud device browser.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector"},
+                    "text": {"type": "string", "description": "Text to type"},
+                    "device_id": {"type": "string", "description": "Optional device identifier"}
+                },
+                "required": ["selector", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_device.screenshot",
+            "description": "Take a screenshot of the cloud device browser page. Returns base64-encoded image.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "full_page": {"type": "boolean", "description": "Full page capture"},
+                    "device_id": {"type": "string", "description": "Optional device identifier"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_device.extract",
+            "description": "Extract all visible text from the cloud device browser page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_id": {"type": "string", "description": "Optional device identifier"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_device.disconnect",
+            "description": "Disconnect and cleanup the cloud device browser session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_id": {"type": "string", "description": "Optional device identifier"}
+                }
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -885,6 +972,96 @@ def exec_browser_extract(args: dict) -> dict:
     except Exception as e:
         return {"error": f"Browser extract failed: {e}"}
 
+
+# ============ Cloud Device Executors (playwright) ============
+
+_executor_cloud_devices = {}
+
+def _get_cloud_device(device_id: str = "default"):
+    """Get or create a cloud device BrowserTool instance."""
+    global _executor_cloud_devices
+    if device_id not in _executor_cloud_devices:
+        from tical_code.plugins.cloud_device import BrowserTool
+        _executor_cloud_devices[device_id] = BrowserTool(device_id=device_id)
+    return _executor_cloud_devices[device_id]
+
+def exec_cloud_navigate(args: dict) -> dict:
+    """Open URL in cloud device browser."""
+    import asyncio
+    try:
+        url = args["url"]
+        device_id = args.get("device_id", "default")
+        bt = _get_cloud_device(device_id)
+        result = asyncio.run(bt.open(url))
+        return {"ok": True, "url": url, "device_id": device_id, "screenshot": result.screenshot}
+    except Exception as e:
+        return {"error": f"Cloud device navigate failed: {e}"}
+
+def exec_cloud_click(args: dict) -> dict:
+    """Click element in cloud device browser."""
+    import asyncio
+    try:
+        selector = args["selector"]
+        device_id = args.get("device_id", "default")
+        bt = _get_cloud_device(device_id)
+        result = asyncio.run(bt.click(selector))
+        return {"ok": True, "selector": selector, "device_id": device_id, "screenshot": result.screenshot}
+    except Exception as e:
+        return {"error": f"Cloud device click failed: {e}"}
+
+def exec_cloud_type(args: dict) -> dict:
+    """Type text in cloud device browser."""
+    import asyncio
+    try:
+        selector = args["selector"]
+        text = args["text"]
+        device_id = args.get("device_id", "default")
+        bt = _get_cloud_device(device_id)
+        result = asyncio.run(bt.type_text(selector, text))
+        return {"ok": True, "selector": selector, "device_id": device_id}
+    except Exception as e:
+        return {"error": f"Cloud device type failed: {e}"}
+
+def exec_cloud_screenshot(args: dict) -> dict:
+    """Take screenshot of cloud device browser."""
+    import asyncio
+    try:
+        full_page = args.get("full_page", False)
+        device_id = args.get("device_id", "default")
+        bt = _get_cloud_device(device_id)
+        screenshot = asyncio.run(bt.screenshot(full_page=full_page))
+        if screenshot:
+            return {"ok": True, "screenshot": screenshot, "device_id": device_id}
+        return {"error": "Screenshot returned empty"}
+    except Exception as e:
+        return {"error": f"Cloud device screenshot failed: {e}"}
+
+def exec_cloud_extract(args: dict) -> dict:
+    """Extract text from cloud device browser."""
+    import asyncio
+    try:
+        device_id = args.get("device_id", "default")
+        bt = _get_cloud_device(device_id)
+        result = asyncio.run(bt.extract())
+        return {"content": result.text, "device_id": device_id}
+    except Exception as e:
+        return {"error": f"Cloud device extract failed: {e}"}
+
+def exec_cloud_disconnect(args: dict) -> dict:
+    """Disconnect cloud device browser."""
+    import asyncio
+    try:
+        device_id = args.get("device_id", "default")
+        global _executor_cloud_devices
+        if device_id in _executor_cloud_devices:
+            bt = _executor_cloud_devices.pop(device_id)
+            asyncio.run(bt.disconnect())
+            return {"ok": True, "device_id": device_id}
+        return {"ok": True, "device_id": device_id, "note": "not connected"}
+    except Exception as e:
+        return {"error": f"Cloud device disconnect failed: {e}"}
+
+
 # ============ SubAgent 3 Tools ============
 
 def exec_delegate_task(args: dict) -> dict:
@@ -1106,6 +1283,12 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "cron_schedule": exec_cron_schedule,
         "cron_list": exec_cron_list,
         "cron_cancel": exec_cron_cancel,
+        "cloud_device.navigate": exec_cloud_navigate,
+        "cloud_device.click": exec_cloud_click,
+        "cloud_device.type": exec_cloud_type,
+        "cloud_device.screenshot": exec_cloud_screenshot,
+        "cloud_device.extract": exec_cloud_extract,
+        "cloud_device.disconnect": exec_cloud_disconnect,
         "memory_fts_search": exec_memory_fts_search,
     }
     handler = dispatch.get(name)
