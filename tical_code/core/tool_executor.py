@@ -471,10 +471,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "cloud_device.extract",
-            "description": "Extract all visible text from the cloud device browser page.",
+            "description": "Extract text from the cloud device browser page.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "selector": {"type": "string", "description": "CSS selector (default: body)"},
                     "device_id": {"type": "string", "description": "Optional device identifier"}
                 }
             }
@@ -993,7 +994,9 @@ def exec_cloud_navigate(args: dict) -> dict:
         device_id = args.get("device_id", "default")
         bt = _get_cloud_device(device_id)
         result = asyncio.run(bt.open(url))
-        return {"ok": True, "url": url, "device_id": device_id, "screenshot": result.screenshot}
+        if not result.success and not bt._using_playwright and not bt._using_selenium:
+            return {"error": f"No browser engine available. Install playwright: pip install playwright && playwright install chromium"}
+        return {"ok": True, "url": url, "device_id": device_id, "screenshot": result.screenshot, "title": result.page_title}
     except Exception as e:
         return {"error": f"Cloud device navigate failed: {e}"}
 
@@ -1004,6 +1007,8 @@ def exec_cloud_click(args: dict) -> dict:
         selector = args["selector"]
         device_id = args.get("device_id", "default")
         bt = _get_cloud_device(device_id)
+        if not bt._using_playwright and not bt._using_selenium:
+            return {"error": "No browser engine. Install playwright: pip install playwright && playwright install chromium"}
         result = asyncio.run(bt.click(selector))
         return {"ok": True, "selector": selector, "device_id": device_id, "screenshot": result.screenshot}
     except Exception as e:
@@ -1017,6 +1022,8 @@ def exec_cloud_type(args: dict) -> dict:
         text = args["text"]
         device_id = args.get("device_id", "default")
         bt = _get_cloud_device(device_id)
+        if not bt._using_playwright and not bt._using_selenium:
+            return {"error": "No browser engine. Install playwright: pip install playwright && playwright install chromium"}
         result = asyncio.run(bt.type_text(selector, text))
         return {"ok": True, "selector": selector, "device_id": device_id}
     except Exception as e:
@@ -1029,6 +1036,8 @@ def exec_cloud_screenshot(args: dict) -> dict:
         full_page = args.get("full_page", False)
         device_id = args.get("device_id", "default")
         bt = _get_cloud_device(device_id)
+        if not bt._using_playwright and not bt._using_selenium:
+            return {"error": "No browser engine. Install playwright: pip install playwright && playwright install chromium"}
         screenshot = asyncio.run(bt.screenshot(full_page=full_page))
         if screenshot:
             return {"ok": True, "screenshot": screenshot, "device_id": device_id}
@@ -1041,9 +1050,16 @@ def exec_cloud_extract(args: dict) -> dict:
     import asyncio
     try:
         device_id = args.get("device_id", "default")
+        selector = args.get("selector", "body")
         bt = _get_cloud_device(device_id)
-        result = asyncio.run(bt.extract())
-        return {"content": result.text, "device_id": device_id}
+        result = asyncio.run(bt.extract(selector))
+        text = ""
+        if result.extracted_data:
+            if isinstance(result.extracted_data, dict):
+                text = result.extracted_data.get("text", str(result.extracted_data))
+            else:
+                text = str(result.extracted_data)
+        return {"content": text, "device_id": device_id}
     except Exception as e:
         return {"error": f"Cloud device extract failed: {e}"}
 
@@ -1055,7 +1071,8 @@ def exec_cloud_disconnect(args: dict) -> dict:
         global _executor_cloud_devices
         if device_id in _executor_cloud_devices:
             bt = _executor_cloud_devices.pop(device_id)
-            asyncio.run(bt.disconnect())
+            if bt._using_playwright or bt._using_selenium:
+                asyncio.run(bt.disconnect())
             return {"ok": True, "device_id": device_id}
         return {"ok": True, "device_id": device_id, "note": "not connected"}
     except Exception as e:
