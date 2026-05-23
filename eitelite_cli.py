@@ -155,6 +155,22 @@ def _get_worker_info() -> dict:
 
 # ── commands ───────────────────────────────────────────────────────────────
 
+def cmd_start(args):
+    """Start worker."""
+    cfg_path = REPO_ROOT / "config.json"
+    if not cfg_path.exists():
+        print(f"Error: config.json not found at {cfg_path}")
+        print("Run install script or create config.json manually.")
+        return 1
+    import json, sys
+    cfg = json.loads(cfg_path.read_text())
+    sys.path.insert(0, str(REPO_ROOT))
+    from tical_code.core.unified_worker import Worker
+    w = Worker(cfg)
+    w.run()
+    return 0
+
+
 def cmd_status(args):
     """Show worker status."""
     info = _get_worker_info()
@@ -304,13 +320,14 @@ def main():
         add_help=False,
     )
     parser.add_argument("command", nargs="?", default="help",
-                        choices=["status", "log", "prompt", "restart", "version", "help"])
+                        choices=["start", "status", "log", "prompt", "restart", "version", "help"])
     parser.add_argument("text", nargs="?", default="", help="prompt text (for 'prompt' command)")
     parser.add_argument("-n", type=int, default=50, help="log lines (for 'log' command)")
 
     args = parser.parse_args()
 
     commands = {
+        "start": cmd_start,
         "status": cmd_status,
         "log": cmd_log,
         "prompt": cmd_prompt,
