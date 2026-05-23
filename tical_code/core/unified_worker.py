@@ -290,11 +290,19 @@ All other messages enter the LLM conversation loop.
 
         conv = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": msg.content},
         ]
+        # Module 1: Load previous session context
+        session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
+        history = self.sessions.load_session(session_id)
+        conv.extend(history)
+        conv.append({"role": "user", "content": msg.content})
 
         max_iterations = 60
         for iteration in range(max_iterations):
+            # Module 2: Context compaction - trim if over token limit
+            if self.compactor.needs_compaction(conv):
+                conv = self.compactor.compact(conv, lambda msgs: {"content": ""})
+                logger.info(f"[worker] context compacted: {len(conv)} messages")
             response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
             content = response.get("content", "")
             tool_calls = response.get("tool_calls", [])
