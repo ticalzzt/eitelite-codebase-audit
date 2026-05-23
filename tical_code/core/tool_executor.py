@@ -1243,6 +1243,35 @@ def exec_web_search(args):
         return {"error": "web_search: " + str(e)}
 
 
+# ============ Secret Redaction ============
+
+_DEFAULT_REDACTION_PATTERNS = [
+    ("api_key_openai", re.compile(r'sk-[a-zA-Z0-9]{20,}')),
+    ("api_key_google", re.compile(r'AIza[a-zA-Z0-9_-]{35}')),
+    ("api_key_generic", re.compile(r'["\']?api[_-]?key["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{20,})["\']?', re.IGNORECASE)),
+    ("token_github", re.compile(r'ghp_[a-zA-Z0-9]{36}')),
+    ("token_gitlab", re.compile(r'glpat-[a-zA-Z0-9\-]{20,}')),
+    ("password", re.compile(r'(?:password|passwd|pwd)\s*[:=]\s*\S+', re.IGNORECASE)),
+    ("private_key", re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----')),
+    ("connection_mongodb", re.compile(r'mongodb://[^:\s]+:[^@\s]+@')),
+    ("connection_postgres", re.compile(r'postgres(?:ql)?://[^:\s]+:[^@\s]+@', re.IGNORECASE)),
+    ("connection_mysql", re.compile(r'mysql://[^:\s]+:[^@\s]+@')),
+    ("connection_redis", re.compile(r'redis://:[^@\s]+@')),
+    ("aws_access_key", re.compile(r'AKIA[0-9A-Z]{16}')),
+    ("aws_secret_key", re.compile(r'["\']?aws[_-]?secret[_-]?access[_-]?key["\']?\s*[:=]\s*["\']?[A-Za-z0-9/+=]{40}["\']?', re.IGNORECASE)),
+    ("bearer_token", re.compile(r'Bearer\s+[a-zA-Z0-9_\-\.]{20,}', re.IGNORECASE)),
+]
+
+def redact_secrets(text: str) -> str:
+    """Redact API keys, tokens, passwords from text for safe logging."""
+    if not text:
+        return text
+    result = text
+    for type_name, pattern in _DEFAULT_REDACTION_PATTERNS:
+        result = pattern.sub(f"[REDACTED_{type_name}]", result)
+    return result
+
+
 # ============ FTS Memory 1 Tool ============
 
 _executor_fts = None
