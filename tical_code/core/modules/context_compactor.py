@@ -1,7 +1,5 @@
 """Module 2: Context Compaction - token-aware conversation trimming."""
 
-from __future__ import annotations
-
 import json
 import logging
 import re
@@ -114,5 +112,4 @@ class ContextCompactor:
             logger.exception("LLM summary failed")
             return ""
 
-    def reset(self) -> None:
-        return
+

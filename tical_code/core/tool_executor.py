@@ -256,21 +256,6 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "conv_search",
-            "description": "Full-text search conversation history. Supports Chinese and English.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "top_k": {"type": "integer", "description": "Number of results", "default": 5}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "state_save",
             "description": "Save persistent state (non-memory key-value data).",
             "parameters": {
@@ -725,16 +710,15 @@ TOOL_SCHEMAS = [
     },
 ]
 
-# ============ TOOL_SCHEMAS_CLEAN (remove bash_execute if present) ============
+# ============ TOOL_SCHEMAS_CLEAN (remove bash_execute + replace dots for API compat) ============
 
-TOOL_SCHEMAS_CLEAN = [
-    s for s in TOOL_SCHEMAS if s["function"]["name"] != "bash_execute"
-]
-
-# Tool call limits
-MAX_TOOL_ITERATIONS = 8
-SOFT_HINT_AT = 5   # gentle nudge to wrap up
-HARD_STOP_AT = 8   # force stop
+TOOL_SCHEMAS_CLEAN = []
+for s in TOOL_SCHEMAS:
+    if s["function"]["name"] == "bash_execute":
+        continue
+    s_copy = json.loads(json.dumps(s))
+    s_copy["function"]["name"] = s_copy["function"]["name"].replace(".", "__")
+    TOOL_SCHEMAS_CLEAN.append(s_copy)
 
 def exec_bash(args: dict) -> dict:
     cmd = args.get("command", "")
@@ -930,19 +914,6 @@ def get_memory_injection() -> str:
     if parts:
         return "\n".join(parts)
     return ""
-
-def exec_conv_search(args: dict) -> dict:
-    try:
-        from .memory_sense import conversation_search
-    except ImportError:
-        return {"error": "memory_sense module unavailable"}
-    query = args.get("query", "")
-    if not query:
-        return {"error": "Query cannot be empty"}
-    session_id = args.get("session_id")
-    top_k = min(int(args.get("top_k", 5)), 20)
-    results = conversation_search(query, session_id=session_id, top_k=top_k)
-    return {"results": results, "total": len(results)}
 
 def _try_chat_url(urls: list, target: str, content: str, identity: str, key: str) -> dict:
     """Try each tical-chat URL in order. Returns first success or last error."""
@@ -1792,7 +1763,6 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "memory_save": lambda a: exec_memory(a, base_dir),  # backward compat
         "memory_load": lambda a: exec_memory_list(a, base_dir),  # backward compat
         "state_save": lambda a: exec_state_save(a, base_dir),
-        "conv_search": exec_conv_search,
         "chat_send": exec_chat_send,
         "web_fetch": exec_web_fetch,
         "analyze_image": exec_analyze_image,

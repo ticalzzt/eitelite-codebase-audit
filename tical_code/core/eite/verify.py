@@ -1,17 +1,14 @@
 """EITE verify layer - verify claims match reality.
 
-Three hooks in worker loop:
+Two hooks in worker loop:
   Hook 1: Identity integrity (every loop iteration)
   Hook 2: Post-tool verification (after every tool call)
-  Hook 3: Pre-reply claim scan (before sending to user)
 """
 import hashlib
 import json
-import os
-import re
 import time
 from pathlib import Path
-from .signature import sign, verify as sig_verify, _get_hardware_id
+from .signature import sign, _get_hardware_id
 
 class VerifyLayer:
     def __init__(self, name: str, workspace: str):
@@ -92,51 +89,6 @@ class VerifyLayer:
             "verified": verified, "detail": detail
         })
         return result
-
-    # === Hook 3: Pre-Reply Claim Scan ===
-
-    def scan_reply(self, reply_text: str) -> list:
-        """Scan reply for unverified claims before sending to user."""
-        warnings = []
-        reply_lower = reply_text.lower()
-        executed_names = {t["name"] for t in self._session_tools}
-        executed_verified = {t["name"] for t in self._session_tools if t["verified"]}
-
-        # Claim patterns to required tools
-        claim_map = {
-            # English patterns
-            r"\bsaved\b": {"file_write", "memory_save", "state_save"},
-            r"\bsaved\b": {"file_write", "memory_save", "state_save"},
-            r"\bsent to\b": {"chat_send"},
-            r"\bcreated\b": {"file_write", "bash"},
-            r"\bdeleted\b": {"bash"},
-            r"\binstalled\b": {"bash"},
-            r"\bwritten to\b": {"file_write"},
-            r"\bfixed\b": {"bash", "file_write"},
-            r"\bdeployed\b": {"bash"},
-            # Chinese patterns (removed broken empty-string entries that matched everything)
-            r"已保存": {"file_write", "memory_save", "state_save"},
-            r"已发送": {"chat_send"},
-            r"已创建": {"file_write", "bash"},
-            r"已删除": {"bash"},
-            r"已安装": {"bash"},
-            r"已修复": {"bash", "file_write"},
-            r"已写入": {"file_write"},
-            r"已部署": {"bash"},
-        }
-
-        for pattern, required_tools in claim_map.items():
-            if re.search(pattern, reply_lower):
-                if not (executed_names & required_tools):
-                    warnings.append(
-                        f"Claim '{pattern}' in reply but no {required_tools} tool executed"
-                    )
-                elif not (executed_verified & required_tools):
-                    warnings.append(
-                        f"Claim '{pattern}' in reply but tool verification failed"
-                    )
-
-        return warnings
 
     def reset_session(self):
         """Call at start of each message processing turn."""

@@ -1,7 +1,5 @@
 """Module 3: Loop Detection - detect repetitive tool-call patterns."""
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging

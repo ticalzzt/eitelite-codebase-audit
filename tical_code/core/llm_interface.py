@@ -345,6 +345,5 @@ class DeepSeekProvider(LLMProvider):
         if base_url:
             self._base_url = base_url.rstrip("/")
         logger.info(f"[llm_interface] model switched to {model}")
-
     def get_provider(self) -> str:
-        return "deepseek"
+        return "provider"

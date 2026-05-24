@@ -596,26 +596,3 @@ def clarify_goal(
     phase = ClarifyPhase(constitution_enforcer=constitution_enforcer)
     return phase.analyze_goal(goal, context)
 
-def format_clarify_questions(result: ClarifyResult) -> str:
-    """ """
-    if result.status == ClarifyStatus.CLEAR:
-        return ",."
-
-    if result.status == ClarifyStatus.REJECT:
-        return f"⛔ : {result.rejection_reason}"
-
-    # NEEDS_CLARIFICATION
-    lines = [f"📋 (: {result.confidence:.0%}):\n"]
-    for i, q in enumerate(result.questions, 1):
-        lines.append(f"  {i}. {q.question}")
-        if q.reason:
-            lines.append(f"     : {q.reason}")
-        if q.options:
-            option_str = " / ".join(q.options)
-            lines.append(f"     : {option_str}")
-        if q.default:
-            lines.append(f"     : {q.default}")
-        required_mark = "()" if q.required else "()"
-        lines.append(f"     {required_mark}")
-
-    return "\n".join(lines)

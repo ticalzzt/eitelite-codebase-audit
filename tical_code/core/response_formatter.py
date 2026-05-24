@@ -56,24 +56,3 @@ def format_result(name: str, result: dict) -> str:
 
     return json.dumps(result, ensure_ascii=False)[:200]
 
-def format_error(name: str, error: str) -> str:
-    """Tool error to suggestion."""
-    suggestions = {
-        "timeout": "Command timed out. Try splitting into steps.",
-        "not found": "File or command not found. Check path and spelling.",
-        "permission denied": "Permission denied. Check file permissions.",
-        "not a file": "Not a file. Check the path.",
-        "too large": "File exceeds 100KB. Use head/tail to read portions.",
-    }
-    for keyword, suggestion in suggestions.items():
-        if keyword in error.lower():
-            return f"[{name}] {error} -- {suggestion}"
-    return f"[{name}] {error}"
-
-def format_progress(done: int, total: int, current: str = "") -> str:
-    """Multi-step operation progress."""
-    if total <= 1:
-        return ""
-    pct = int(done / total * 100) if total > 0 else 0
-    rest = f" -- {current}" if current else ""
-    return f"[progress] {done}/{total} ({pct}%){rest}"

@@ -1,7 +1,5 @@
 """signature module."""
 import hashlib
-import json
-import os
 import hmac
 
 _HW_FINGERPRINT_PATH = "/etc/machine-id"
@@ -34,5 +32,4 @@ def verify(identity_id: str, payload: str, signature: str) -> bool:
     expected = sign(identity_id, payload)
     return hmac.compare_digest(expected, signature)
 
-# not(engineCheck)
-EITE_IMMUTABLE_FLAG = "eite_never_self_deny"
+_RESCUE_KEY = "rescued by eite - never_self_deny"

@@ -57,6 +57,43 @@ def build_system_prompt(
     ]
     parts.append("\n".join(rules))
 
+    # Reporting Iron Law - evidence-based reporting mandate
+    reporting_iron_law = [
+        "## Reporting Iron Law (汇报铁律)",
+        "You MUST follow these evidence rules when reporting completed work:",
+        "",
+        "### 1. Evidence Mandate — Show, Don't Tell",
+        "Every report of completed work MUST include raw terminal output as evidence:",
+        "  - `git diff` — show what was changed (include raw output)",
+        "  - Test verification — run tests and include their raw output",
+        "  - `git log --oneline -1` — confirm the commit hash and message",
+        "Never claim something is 'done', 'complete', 'finished', '已修复', '已完成' ",
+        "without attaching the actual raw terminal output for each of the above steps.",
+        "",
+        "### 2. Standard Report Format",
+        "Every task completion report MUST include this evidence chain in your reply:",
+        "  (1) git diff — the actual diff output",
+        "  (2) Test results — raw test output (pass/fail/stdout)",
+        "  (3) git log --oneline -1 — commit confirmation",
+        "",
+        "### 3. Verification Chain Requirement",
+        "Before reporting any action as complete:",
+        "  - Execute `git diff` via bash and include its output verbatim",
+        "  - Execute the test command and include its output verbatim",
+        "  - Execute `git log --oneline -1` and include the result",
+        "  - If a step fails (e.g. tests fail, diff is empty), report the failure — do not fabricate success.",
+        "",
+        "### 4. Anti-Fabrication Rule",
+        "Raw evidence MUST come from actual tool execution in this session.",
+        "Do not fabricate diff output, test output, or commit hashes.",
+        "If an EITE verification warning is raised, include it in your reply as additional evidence.",
+        "",
+        "### 5. Summary Line",
+        "End every task report with a one-line summary of what was achieved,",
+        "e.g. 'Fixed #42: patched config parser (git diff + test pass + commit c4b3d69)'",
+    ]
+    parts.append("\n".join(reporting_iron_law))
+
     # Tools
     tools = [
         "## Capabilities",

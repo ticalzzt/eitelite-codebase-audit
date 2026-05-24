@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tical_code.core.channel import Message, Response, TelegramChannel, TicalChatChannel
 from tical_code.core.llm_interface import DeepSeekProvider
-from tical_code.core.tool_executor import execute, TOOL_SCHEMAS, redact_secrets
+from tical_code.core.tool_executor import execute, TOOL_SCHEMAS, TOOL_SCHEMAS_CLEAN, redact_secrets
 from tical_code.core.response_formatter import format_result
 from tical_code.core.eite import init as eite_init, get_verify
 from tical_code.core.prompt import build_system_prompt
@@ -27,7 +27,6 @@ from tical_code.core.modules.loop_detector import LoopDetector
 from tical_code.core.modules.truthful_reporter import TruthfulReporter
 from tical_code.core.modules.proposal_gate import ProposalGate
 from tical_code.core.usage import UsageTracker
-from tical_code.core.heartbeat import HeartbeatConfig, HeartbeatManager
 from tical_code.vigil import build_vigil, NewInstruction
 
 # Known AI worker names — used to detect worker-to-worker messages
@@ -40,19 +39,6 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 
-# Clean TOOL_SCHEMAS: remove bash_execute, replace dots in names for API compat
-TOOL_SCHEMAS_CLEAN = []
-for s in TOOL_SCHEMAS:
-    if s["function"]["name"] == "bash_execute":
-        continue
-    s_copy = json.loads(json.dumps(s))
-    s_copy["function"]["name"] = s_copy["function"]["name"].replace(".", "__")
-    TOOL_SCHEMAS_CLEAN.append(s_copy)
-
-# Tool call limits
-MAX_TOOL_ITERATIONS = 8
-SOFT_HINT_AT = 5   # gentle nudge to wrap up
-HARD_STOP_AT = 8   # force stop
 
 class Worker:
     """Unified worker - polls channels, calls LLM, executes tools, replies."""
@@ -105,11 +91,6 @@ class Worker:
         # Usage tracking
         self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
         
-        # Heartbeat manager
-        hb_cfg = HeartbeatConfig()
-        hb_cfg.heartbeat_interval = 300
-        self.heartbeat = HeartbeatManager(default_config=hb_cfg)
-
         # Vigil — AI safety runtime (v1: pure software, no hardware)
         try:
             self.vigil = build_vigil()
@@ -537,12 +518,6 @@ All other messages enter the LLM conversation loop.
                             "content": "Please clearly confirm or cancel the pending proposal."
                         })
                         continue
-
-                # EITE: scan reply
-                if hasattr(self, "eite") and self.eite:
-                    warnings = self.eite.scan_reply(reply)
-                    if warnings:
-                        logger.warning(f"EITE unverified claims: {warnings}")
 
                 # Module 4: Scan for violations — append correction to reply
                 violations = self.reporter.scan_reply(reply)

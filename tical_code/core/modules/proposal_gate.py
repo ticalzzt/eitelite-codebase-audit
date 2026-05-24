@@ -1,7 +1,5 @@
 """Module 5: Proactive Proposal Gate - confirm before write operations."""
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging

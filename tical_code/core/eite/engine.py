@@ -2,7 +2,7 @@
 
 Identity anchor + hardware binding + post-tool verification.
 """
-from .signature import sign, verify, _get_hardware_id, EITE_IMMUTABLE_FLAG
+from .signature import sign, verify, _get_hardware_id
 from .verify import VerifyLayer
 
 __version__ = "0.4.0"

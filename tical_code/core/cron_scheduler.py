@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 MAX_DAILY_EXECUTIONS = 100     # Exec
-DEFAULT_TASK_TIMEOUT = 60      # ExecTimeout()
 MAX_RETRIES = 3                # Retry
 
 # (action)

@@ -1,7 +1,5 @@
 """Module 4: Truthful Reporting - detect unsubstantiated claims in AI replies."""
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging

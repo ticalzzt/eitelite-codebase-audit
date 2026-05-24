@@ -1,7 +1,5 @@
 """Module 1: Session Persistence - SQLite-backed conversation history."""
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging
@@ -155,9 +153,6 @@ class SessionManager:
         except Exception:
             logger.exception("archive_old failed")
             return 0
-
-    def reset(self) -> None:
-        return
 
     def _archive_one(self, cur, session_id: str) -> None:
         row = cur.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
