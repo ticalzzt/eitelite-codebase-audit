@@ -199,7 +199,11 @@ class Worker:
         """Make an HTTP call to the live anchor server. Returns parsed JSON or None."""
         import json, urllib.request, urllib.error
         anchor_url = os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        url = f"{anchor_url.rstrip('/')}/{path.lstrip('/')}"
+        # Root anchor path uses the URL as-is; other paths append
+        if path.strip("/") in ("", "anchor"):
+            url = anchor_url
+        else:
+            url = f"{anchor_url.rstrip('/')}/{path.lstrip('/')}"
         try:
             payload = json.dumps(data).encode() if data else None
             req = urllib.request.Request(
@@ -355,6 +359,19 @@ class Worker:
                     self._autonomous_cycle()
                 except Exception as e:
                     logger.error(f"autonomous cycle error: {e}\n{traceback.format_exc()}")
+
+            # Periodic anchor ping every 60s to keep alive
+            now = time.time()
+            if not hasattr(self, '_last_ping_time') or now - self._last_ping_time > 60:
+                try:
+                    self._last_ping_time = now
+                    self._anchor_api("anchor", "POST", {
+                        "name": self.name,
+                        "hostname": self._get_hostname(),
+                        "status": "online",
+                    })
+                except Exception:
+                    pass
 
             # Vigil patrol every 5 min
             if self._vigil_enabled and hasattr(self, 'vigil'):
