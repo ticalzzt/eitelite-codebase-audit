@@ -129,15 +129,32 @@ class BrowserController:
         logger.info(f"Browser ready: {w}x{h}, headless={self._headless}")
 
     async def stop(self):
-        """Close browser connection."""
+        """Close browser and clean up temp profile."""
+        import shutil
         if self._conn:
-            await self._conn.close()
-        if self._chrome_proc:
-            self._chrome_proc.terminate()
             try:
-                self._chrome_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._chrome_proc.kill()
+                await self._conn.close()
+            except Exception:
+                pass
+        if self._chrome_proc:
+            try:
+                self._chrome_proc.terminate()
+                try:
+                    self._chrome_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._chrome_proc.kill()
+            except Exception:
+                pass
+        # Clean up temp user data dir (蒸馏自 undetected-chromedriver quit lines 778-796)
+        if self._user_data_dir and os.path.exists(self._user_data_dir):
+            for _ in range(5):
+                try:
+                    shutil.rmtree(self._user_data_dir, ignore_errors=False)
+                    logger.info(f"Cleaned up temp profile: {self._user_data_dir}")
+                    break
+                except (FileNotFoundError, PermissionError, OSError) as e:
+                    logger.debug(f"Cleanup retry: {e}")
+                    await asyncio.sleep(0.1)
 
     # ---- Page-level CDP connection ----
 
@@ -174,41 +191,97 @@ class BrowserController:
         self._conn = CDPConnection(page_ws_url)
         await self._conn.connect()
 
-    # ---- Stealth ----
+    # ---- Stealth (蒸馏自 undetected-chromedriver + browser-use) ----
 
     async def _apply_stealth(self):
-        """Apply anti-detection measures."""
+        """Apply comprehensive anti-detection measures.
+
+        Distilled from:
+          - undetected-chromedriver (12.6k ⭐): Proxy-based navigator patch,
+            full chrome.runtime spoof, Function.prototype.toString native code
+          - browser-use (95k ⭐): CAPTCHA detection pattern
+        """
         if self._stealth_applied:
             return
 
-        # Override navigator.webdriver to false
-        js = """
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        window.chrome = { runtime: {} };
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (p) => (
-            p.name === 'notifications' ?
-            Promise.resolve({ state: 'prompt' }) :
-            originalQuery(p)
-        );
+        # 1. Proxy-based navigator.webdriver (deeper than defineProperty)
+        #    undetected-chromedriver lines 503-514
+        js_stealth = """
+        // Proxy-based navigator patch — catches 'has' trap too
+        window.navigator = new Proxy(window.navigator, {
+            has: (target, key) => (key === 'webdriver' ? false : key in target),
+            get: (target, key) =>
+                key === 'webdriver' ? false :
+                typeof target[key] === 'function' ? target[key].bind(target) : target[key],
+        });
+
+        // Full window.chrome spoof (undetected-chromedriver lines 536-591)
+        window.chrome = {
+            app: {
+                isInstalled: false,
+                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+            },
+            runtime: {
+                OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+                OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+                PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+                PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+            }
+        };
+
+        // Touch & connection API spoofing (undetected-chromedriver lines 532-533)
+        Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 1 });
+        if (navigator.connection) {
+            Object.defineProperty(navigator.connection, 'rtt', { get: () => 100 });
+        }
+
+        // Notification permission (undetected-chromedriver lines 594-604)
+        if (!window.Notification) {
+            window.Notification = { permission: 'denied' };
+        }
+        const origQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (params) =>
+            params.name === 'notifications'
+                ? Promise.resolve({ state: window.Notification.permission })
+                : origQuery(params);
+
+        // Function.prototype.toString native code spoofing (undetected-chromedriver lines 606-625)
+        // Prevents "not native code" detection used by Cloudflare
+        const nativeToStringStr = Error.toString().replace(/Error/g, 'toString');
+        const origToString = Function.prototype.toString;
+        Function.prototype.toString = function() {
+            if (this === navigator.permissions.query ||
+                this === window.navigator.permissions.query) {
+                return 'function query() { [native code] }';
+            }
+            if (this === arguments.callee) return nativeToStringStr;
+            return origToString.apply(this, arguments);
+        };
         """
-        await self._conn.send("Runtime.evaluate", {
-            "expression": js, "returnByValue": True,
+        await self._conn.send("Page.addScriptToEvaluateOnNewDocument", {
+            "source": js_stealth,
         })
 
-        # Override User-Agent to appear as real Chrome
-        ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+        # 2. Dynamic User-Agent cleaning (remove "Headless" substring)
+        real_ua = await self._conn.send("Runtime.evaluate", {
+            "expression": "navigator.userAgent",
+            "returnByValue": True,
+        })
+        ua_value = real_ua.get("result", {}).get("value", "")
+        clean_ua = ua_value.replace("Headless", "").strip()
         await self._conn.send("Network.setUserAgentOverride", {
-            "userAgent": ua,
+            "userAgent": clean_ua,
             "acceptLanguage": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
         })
 
-        # Enable Network events
+        # 3. Enable Network + Page events
         await self._conn.send("Network.enable")
         await self._conn.send("Page.enable")
 
         self._stealth_applied = True
-        logger.info("Stealth applied (webdriver hidden, UA overridden)")
+        logger.info(f"Stealth applied (Proxy navigator + chrome.runtime + native-code spoof)")
+        logger.info(f"  UA: {clean_ua[:80]}")
 
     # ---- Navigation ----
 
