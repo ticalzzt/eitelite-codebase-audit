@@ -666,6 +666,35 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "xurl_browser_post",
+            "description": "Post a tweet to X/Twitter via browser (CDP). No API cost. Requires logged-in Chrome session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Tweet text content (max 280 chars)"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "xurl_browser_reply",
+            "description": "Reply to a tweet via browser (CDP). No API cost. Requires logged-in Chrome session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tweet_url": {"type": "string", "description": "Full URL of the tweet to reply to"},
+                    "text": {"type": "string", "description": "Reply text content"}
+                },
+                "required": ["tweet_url", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "xurl_reply",
             "description": "Reply to an existing tweet",
             "parameters": {
@@ -1713,6 +1742,115 @@ def exec_web_search(args):
         return {"error": "web_search: " + str(e)}
 
 
+# ============ Browser-based X/Twitter Tools (CDP, no API cost) ============
+
+def exec_xurl_browser_post(args):
+    """Post tweet via CDP browser. No API key needed. Requires logged-in Chrome session on X.com."""
+    import asyncio
+    try:
+        text = args.get("text", "")
+        if not text:
+            return {"error": "text required"}
+        if len(text) > 280:
+            text = text[:280]
+
+        bc = _get_browser()
+        asyncio.run(bc.navigate("https://x.com/compose/post"))
+        asyncio.run(asyncio.sleep(3))
+
+        # Click the tweet compose area and type
+        asyncio.run(bc._conn.send("Runtime.evaluate", {
+            "expression": """
+            (() => {
+                const el = document.querySelector('[data-testid="tweetTextarea_0"]');
+                if (!el) return 'no compose box';
+                el.focus();
+                el.innerText = el.innerText;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                return 'focused';
+            })();
+            """,
+            "returnByValue": True,
+        }))
+        asyncio.run(asyncio.sleep(1))
+
+        # Type the tweet text via CDP Input.insertText
+        awaitable = bc._conn.send("Input.insertText", {"text": text})
+        asyncio.run(awaitable)
+        asyncio.run(asyncio.sleep(1))
+
+        # Click Post button
+        asyncio.run(bc._conn.send("Runtime.evaluate", {
+            "expression": """
+            (() => {
+                const btn = document.querySelector('[data-testid="tweetButtonInline"]');
+                if (!btn) return 'no post button';
+                btn.click();
+                return 'posted';
+            })();
+            """,
+            "returnByValue": True,
+        }))
+        asyncio.run(asyncio.sleep(2))
+
+        return {"ok": True, "text": text[:50], "method": "browser"}
+    except Exception as e:
+        return {"error": f"browser_post: {e}"}
+
+
+def exec_xurl_browser_reply(args):
+    """Reply to tweet via CDP browser. No API key needed."""
+    import asyncio
+    try:
+        tweet_url = args.get("tweet_url", "")
+        text = args.get("text", "")
+        if not tweet_url or not text:
+            return {"error": "tweet_url and text required"}
+        if len(text) > 280:
+            text = text[:280]
+
+        bc = _get_browser()
+        asyncio.run(bc.navigate(tweet_url))
+        asyncio.run(asyncio.sleep(2))
+
+        # Click reply button
+        asyncio.run(bc._conn.send("Runtime.evaluate", {
+            "expression": """
+            (() => {
+                const btn = document.querySelector('[data-testid="reply"]');
+                if (!btn) return 'no reply button';
+                btn.click();
+                return 'reply_clicked';
+            })();
+            """,
+            "returnByValue": True,
+        }))
+        asyncio.run(asyncio.sleep(1))
+
+        # Type reply text
+        awaitable = bc._conn.send("Input.insertText", {"text": text})
+        asyncio.run(awaitable)
+        asyncio.run(asyncio.sleep(1))
+
+        # Click reply post button
+        asyncio.run(bc._conn.send("Runtime.evaluate", {
+            "expression": """
+            (() => {
+                const btn = document.querySelector('[data-testid="tweetButton"]');
+                if (!btn) return 'no post button';
+                btn.click();
+                return 'replied';
+            })();
+            """,
+            "returnByValue": True,
+        }))
+        asyncio.run(asyncio.sleep(2))
+
+        return {"ok": True, "text": text[:50], "method": "browser"}
+    except Exception as e:
+        return {"error": f"browser_reply: {e}"}
+
+
 # ============ Secret Redaction ============
 
 _DEFAULT_REDACTION_PATTERNS = [
@@ -1776,6 +1914,8 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "xurl_post": exec_xurl_post,
         "xurl_reply": exec_xurl_reply,
         "xurl_timeline": exec_xurl_timeline,
+        "xurl_browser_post": exec_xurl_browser_post,
+        "xurl_browser_reply": exec_xurl_browser_reply,
         "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
