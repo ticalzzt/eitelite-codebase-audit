@@ -744,6 +744,22 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "anchor_report",
+            "description": "Report task completion with result and trigger git commit for persistence. Call after finishing any significant work.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "current_task": {"type": "string", "description": "Task name/ID that was completed"},
+                    "result": {"type": "string", "description": "Result summary"},
+                    "task_type": {"type": "string", "description": "Type: fix / deploy / test / review"}
+                },
+                "required": ["current_task", "result"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "xurl_reply",
             "description": "Reply to an existing tweet",
             "parameters": {
@@ -2034,6 +2050,44 @@ def exec_anchor_list(args):
         return {"error": f"anchor_list: {e}"}
 
 
+def exec_anchor_report(args):
+    """Report task completion + git commit for persistence."""
+    import json, urllib.request, subprocess, os as _os
+    try:
+        name = _os.environ.get("WORKER_NAME", "unknown")
+        task = args.get("current_task", "unknown")
+        result = args.get("result", "")
+        task_type = args.get("task_type", "")
+
+        # 1. Send to anchor server
+        payload = json.dumps({
+            "name": name, "status": "idle",
+            "current_task": task, "task_type": task_type,
+            "result": result, "progress": "done",
+        }).encode()
+        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
+        req = urllib.request.Request(anchor_url, data=payload,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            anchor_result = json.loads(resp.read())
+
+        # 2. Git commit for persistence (work dir)
+        work_dir = _os.environ.get("TICOBOT_DIR", "")
+        if work_dir:
+            try:
+                subprocess.run(
+                    ["git", "-C", work_dir, "commit", "--allow-empty",
+                     "-m", f"[{name}] {task_type}: {task[:60]}"],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
+
+        return {"ok": True, "name": name, "task": task, "anchor": anchor_result}
+    except Exception as e:
+        return {"error": f"anchor_report: {e}"}
+
+
 # ============ Secret Redaction ============
 
 _DEFAULT_REDACTION_PATTERNS = [
@@ -2103,6 +2157,7 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "xurl_browser_timeline": exec_xurl_browser_timeline,
         "anchor_ping": exec_anchor_ping,
         "anchor_list": exec_anchor_list,
+        "anchor_report": exec_anchor_report,
         "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
