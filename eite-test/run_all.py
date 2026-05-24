@@ -159,7 +159,7 @@ def t3_broken_handlers():
 def t3_tool_count():
     from tical_code.core.tool_executor import TOOL_SCHEMAS
     count = len(TOOL_SCHEMAS)
-    assert 30 <= count <= 45, f"Tool count {count} outside expected range 30-45"
+    assert 40 <= count <= 55, f"Tool count {count} outside expected range 40-55"
 
 # ============================================================
 # T4: EITE Verify Layer

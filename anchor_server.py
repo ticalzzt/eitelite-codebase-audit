@@ -98,6 +98,9 @@ class AnchorHandler(BaseHTTPRequestHandler):
         elif self.path == "/anchor/health":
             self._send_json({"status": "ok", "hostname": HOSTNAME})
 
+        elif self.path == "/anchor/task/list":
+            self._task_list()
+
         else:
             self._send_json({"error": "not_found"}, 404)
 
@@ -144,6 +147,101 @@ class AnchorHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+    # ============ Task Queue ============
+
+    def do_TASK(self, method):
+        """Handle /anchor/task/* endpoints with correct HTTP method."""
+        if self.path == "/anchor/task/enqueue" and method == "POST":
+            self._task_enqueue()
+        elif self.path == "/anchor/task/dequeue" and method == "POST":
+            self._task_dequeue()
+        elif self.path == "/anchor/task/complete" and method == "POST":
+            self._task_complete()
+        elif self.path == "/anchor/task/list" and method == "GET":
+            self._task_list()
+        else:
+            self._send_json({"error": "not_found"}, 404)
+
+    def _task_enqueue(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+        except Exception:
+            self._send_json({"error": "bad_request"}, 400)
+            return
+        target = body.get("target", "")
+        task = body.get("task", "")
+        if not target or not task:
+            self._send_json({"error": "target and task required"}, 400)
+            return
+        data = self._read()
+        tasks = data.setdefault("anchor_tasks", [])
+        entry = {
+            "id": int(time.time() * 1000) % 1000000,
+            "target": target,
+            "task": task,
+            "sender": body.get("sender", "unknown"),
+            "status": "queued",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "assigned_to": None,
+            "result": None,
+        }
+        tasks.insert(0, entry)  # newest first
+        self._save(data)
+        self._send_json({"ok": True, "task_id": entry["id"]})
+
+    def _task_dequeue(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+        except Exception:
+            self._send_json({"error": "bad_request"}, 400)
+            return
+        worker = body.get("worker", "")
+        if not worker:
+            self._send_json({"error": "worker required"}, 400)
+            return
+        data = self._read()
+        tasks = data.get("anchor_tasks", [])
+        # Find first queued task for this worker OR unassigned
+        for t in tasks:
+            if t["status"] == "queued" and (t["target"] == worker or t["target"] == "any"):
+                t["status"] = "running"
+                t["assigned_to"] = worker
+                t["started_at"] = datetime.now(timezone.utc).isoformat()
+                self._save(data)
+                self._send_json({"ok": True, "task": t})
+                return
+        self._send_json({"ok": True, "task": None})  # no task available
+
+    def _task_complete(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+        except Exception:
+            self._send_json({"error": "bad_request"}, 400)
+            return
+        task_id = body.get("task_id", 0)
+        result = body.get("result", "")
+        status = body.get("status", "done")
+        data = self._read()
+        for t in data.get("anchor_tasks", []):
+            if t["id"] == task_id:
+                t["status"] = status
+                t["result"] = result
+                t["completed_at"] = datetime.now(timezone.utc).isoformat()
+                self._save(data)
+                self._send_json({"ok": True, "task_id": task_id})
+                return
+        self._send_json({"error": "task not found"}, 404)
+
+    def _task_list(self):
+        data = self._read()
+        tasks = data.get("anchor_tasks", [])
+        tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+        self._send_json({"ok": True, "tasks": tasks[:50]})
+
 
 
 if __name__ == "__main__":

@@ -760,6 +760,60 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "anchor_task_enqueue",
+            "description": "Enqueue a task for a worker. Target 'any' = first available worker picks it up.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Worker name or 'any'"},
+                    "task": {"type": "string", "description": "Task description"},
+                    "sender": {"type": "string", "description": "Who sent it"}
+                },
+                "required": ["task"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "anchor_task_dequeue",
+            "description": "Pick up the next queued task for this worker.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "anchor_task_complete",
+            "description": "Mark a task done/failed with result.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "Task ID from dequeue"},
+                    "result": {"type": "string", "description": "Result summary"},
+                    "status": {"type": "string", "description": "done or failed"}
+                },
+                "required": ["task_id", "result"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "anchor_task_list",
+            "description": "List all queued/running/completed tasks.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "xurl_reply",
             "description": "Reply to an existing tweet",
             "parameters": {
@@ -2050,6 +2104,71 @@ def exec_anchor_list(args):
         return {"error": f"anchor_list: {e}"}
 
 
+def exec_anchor_task_enqueue(args):
+    """Enqueue a task for a worker. Target 'any' = first available picks it up."""
+    import json, urllib.request, os as _os
+    try:
+        target = args.get("target", "any")
+        task = args.get("task", "")
+        sender = args.get("sender", _os.environ.get("WORKER_NAME", "unknown"))
+        if not task:
+            return {"error": "task required"}
+        payload = json.dumps({"target": target, "task": task, "sender": sender}).encode()
+        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
+        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/enqueue", data=payload,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        return {"error": f"task_enqueue: {e}"}
+
+
+def exec_anchor_task_dequeue(args):
+    """Pick up the next queued task."""
+    import json, urllib.request, os as _os
+    try:
+        worker = args.get("worker", _os.environ.get("WORKER_NAME", ""))
+        if not worker:
+            return {"error": "worker required"}
+        payload = json.dumps({"worker": worker}).encode()
+        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
+        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/dequeue", data=payload,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        return {"error": f"task_dequeue: {e}"}
+
+
+def exec_anchor_task_complete(args):
+    """Mark a task done/failed."""
+    import json, urllib.request, os as _os
+    try:
+        task_id = args.get("task_id", 0)
+        result = args.get("result", "")
+        status = args.get("status", "done")
+        payload = json.dumps({"task_id": task_id, "result": result, "status": status}).encode()
+        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
+        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/complete", data=payload,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        return {"error": f"task_complete: {e}"}
+
+
+def exec_anchor_task_list(args):
+    """List all tasks."""
+    import json, urllib.request, os as _os
+    try:
+        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
+        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/list")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        return {"error": f"task_list: {e}"}
+
+
 def exec_anchor_report(args):
     """Report task completion + git commit for persistence."""
     import json, urllib.request, subprocess, os as _os
@@ -2158,6 +2277,10 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "anchor_ping": exec_anchor_ping,
         "anchor_list": exec_anchor_list,
         "anchor_report": exec_anchor_report,
+        "anchor_task_enqueue": exec_anchor_task_enqueue,
+        "anchor_task_dequeue": exec_anchor_task_dequeue,
+        "anchor_task_complete": exec_anchor_task_complete,
+        "anchor_task_list": exec_anchor_task_list,
         "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
