@@ -1073,7 +1073,18 @@ def _get_browser():
     global _executor_browser
     if _executor_browser is None:
         from tical_code.plugins.browser.browser_controller import BrowserController
-        _executor_browser = BrowserController()
+        # First try: connect to existing Chrome via CDP (from env CDP_URL)
+        import os
+        cdp_url = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
+        headless = os.environ.get("CDP_HEADLESS", "1") == "1"
+        _executor_browser = BrowserController(cdp_url=cdp_url, headless=headless)
+        import asyncio
+        try:
+            asyncio.run(_executor_browser.start())
+        except Exception as e:
+            logger.warning(f"CDP browser connect failed ({e}), falling back to headless auto-launch")
+            _executor_browser = BrowserController(headless=True)
+            asyncio.run(_executor_browser.start())
     return _executor_browser
 
 def exec_browser_navigate(args: dict) -> dict:
@@ -1111,10 +1122,20 @@ def exec_browser_screenshot(args: dict) -> dict:
 def exec_browser_extract(args: dict) -> dict:
     """Extract text from the current page."""
     import asyncio
+    import json as _json
     try:
         bc = _get_browser()
-        result = asyncio.run(bc.extract())
-        return {"content": str(result)}
+        raw = asyncio.run(bc.extract())
+        # CDP controller returns JSON string
+        try:
+            data = _json.loads(raw) if isinstance(raw, str) else raw
+            return {
+                "title": data.get("title", ""),
+                "content": data.get("text", ""),
+                "interactive": data.get("interactive", []),
+            }
+        except (_json.JSONDecodeError, TypeError):
+            return {"content": str(raw)}
     except Exception as e:
         return {"error": f"Browser extract failed: {e}"}
 
