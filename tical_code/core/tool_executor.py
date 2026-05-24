@@ -29,6 +29,12 @@ PROTECTED_SYSTEM_PATHS = [
     "/usr/",
 ]
 
+# Paths always allowed for writes (temp files, caches)
+ALLOWED_WRITE_PATHS = [
+    "/tmp/",
+    "/var/tmp/",
+]
+
 # === Absolutely forbidden commands (always block) ===
 BASH_BLACKLIST = [
     r"\breboot\b",
@@ -137,8 +143,10 @@ def _bash_safety_check(command: str) -> Optional[str]:
         abs_paths = re.findall(r'(?<!\w)(/[^\s;|&>]+)', command)
         for p in abs_paths:
             # Skip redirect targets: /dev/null from 2>/dev/null, /path from >/path
-            # e.g. "2>/dev/null" or ">/tmp/foo" or " &>/dev/null" or " 2>/dev/null"
             if re.search(r'(?:^|\s|[;&|])\d*(?:>|>>)\s*' + re.escape(p) + r'(?:\s|$)', command):
+                continue
+            # Skip allowed write paths (/tmp, /var/tmp etc.)
+            if any(p.startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
                 continue
             resolved = Path(p).resolve()
             if not str(resolved).startswith(WORKSPACE):

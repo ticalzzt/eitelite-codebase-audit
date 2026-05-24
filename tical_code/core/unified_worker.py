@@ -107,6 +107,9 @@ class Worker:
         # Set env for tools that depend on WORKER_NAME
         os.environ["WORKER_NAME"] = cfg["name"]
 
+        # Task error tracking for autonomous cycle
+        self._task_errored = False
+
         # Vigil — AI safety runtime (v1: pure software, no hardware)
         try:
             self.vigil = build_vigil()
@@ -317,6 +320,18 @@ class Worker:
                 "current_task": task_desc_str, "progress": f"continued",
                 "task_type": "autonomous",
             })
+        elif self._task_errored:
+            # Task failed (deadlock or LLM error) — mark as failed, not done
+            logger.warning(f"[autonomous] task #{task_id} failed: error during execution")
+            self._anchor_api("task/complete", "POST", {
+                "task_id": task_id, "result": "failed: execution error",
+                "status": "failed",
+            })
+            self._anchor_api("anchor", "POST", {
+                "name": self.name, "status": "online",
+                "current_task": "", "progress": "", "task_type": "",
+                "result": f"failed: {task_desc_str}",
+            })
         else:
             # Task completed normally
             self._anchor_api("task/complete", "POST", {
@@ -499,6 +514,7 @@ All other messages enter the LLM conversation loop.
         self.gate.clear_pending()
         self.loop_detector.reset()
         self._consecutive_blocks = 0
+        self._task_errored = False
         
         # Init conversation with system prompt + memory injection
         from tical_code.core.tool_executor import get_memory_injection as _mem_inject
@@ -546,6 +562,7 @@ All other messages enter the LLM conversation loop.
                 import traceback as _tb
                 _tb.print_exc()
                 error_str = str(e)
+                self._task_errored = True
                 hint = ""
                 if "401" in error_str or "402" in error_str or "403" in error_str:
                     hint = " API key error — use switch_model to set a valid key."
@@ -609,21 +626,29 @@ All other messages enter the LLM conversation loop.
                         result = self.eite.verify_tool_result(name, args, result)
                         logger.info(f"  verify {name}: {result.get('verified')} ({result.get('verify_detail', '')})")
                         if not result.get("verified"):
-                            self._consecutive_blocks += 1
-                            if self._consecutive_blocks >= 2:
+                            # Only count SAFETY blocks as deadlock candidates,
+                            # not regular execution failures (exit_code != 0)
+                            _detail = result.get("verify_detail", "")
+                            if "safety_blocked" in _detail or "blocked" in _detail.lower():
+                                self._consecutive_blocks += 1
+                                if self._consecutive_blocks >= 2:
+                                    self._task_errored = True
+                                    conv.append({
+                                        "role": "system",
+                                        "content": f"[DEADLOCK] {name} keeps getting blocked. STOP trying tools and reply directly to the user with what you have."
+                                    })
+                                    logger.warning(f"  deadlock break: {self._consecutive_blocks} consecutive blocks")
+                                    break  # exit tool loop, force reply
                                 conv.append({
-                                    "role": "system",
-                                    "content": f"[DEADLOCK] {name} keeps getting blocked. STOP trying tools and reply directly to the user with what you have."
+                                    "role": "tool",
+                                    "tool_call_id": tc_id,
+                                    "content": f"[BLOCKED] {name}: {result.get('verify_detail', '?')}. Stop - try a different approach or reply directly.",
                                 })
-                                logger.warning(f"  deadlock break: {self._consecutive_blocks} consecutive blocks")
-                                break  # exit tool loop, force reply
-                            conv.append({
-                                "role": "tool",
-                                "tool_call_id": tc_id,
-                                "content": f"[BLOCKED] {name}: {result.get('verify_detail', '?')}. Stop - try a different approach or reply directly.",
-                            })
-                            responded.add(tc_id)
-                            continue
+                                responded.add(tc_id)
+                                continue
+                            else:
+                                # Execution failure (exit code != 0) — normal, don't deadlock count
+                                self._consecutive_blocks = 0
                         else:
                             self._consecutive_blocks = 0
                     if not formatted:
