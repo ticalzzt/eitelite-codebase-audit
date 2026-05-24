@@ -274,24 +274,29 @@ class Worker:
         data = self._anchor_api("task/dequeue", "POST", {"worker": self.name})
         if not data or not isinstance(data, dict):
             return False
-        task_desc = data.get("task", "")
-        task_id = data.get("task_id", 0)
+        task_obj = data.get("task", {}) if isinstance(data.get("task"), dict) else {}
+        task_desc = task_obj.get("task", data.get("task", "")) if task_obj else data.get("task", "")
+        task_id = task_obj.get("id", data.get("task_id", 0))
         if not task_desc:
             return False
 
-        logger.info(f"[autonomous] dequeued task #{task_id}: {task_desc[:80]}")
+        if isinstance(task_desc, dict):
+            task_desc = str(task_desc.get("task", task_desc))
+        task_desc_str = str(task_desc)[:100]
+
+        logger.info(f"[autonomous] dequeued task #{task_id}: {task_desc_str}")
 
         # 3. Report start to anchor
         self._anchor_api("anchor", "POST", {
             "name": self.name, "status": "online",
-            "current_task": task_desc[:100], "progress": "0%",
+            "current_task": task_desc_str, "progress": "0%",
             "task_type": "autonomous",
         })
 
         # 4. Execute via synthetic message (reuses full LLM + tool loop)
         msg = Message(
             sender="system",
-            content=f"[autonomous] {task_desc}",
+            content=f"[autonomous] {task_desc_str}",
             source="system",
             chat_id="autonomous",
         )
@@ -305,7 +310,7 @@ class Worker:
         self._anchor_api("anchor", "POST", {
             "name": self.name, "status": "online",
             "current_task": "", "progress": "", "task_type": "",
-            "result": f"done: {task_desc[:80]}",
+            "result": f"done: {task_desc_str}",
         })
         logger.info(f"[autonomous] completed task #{task_id}")
         return True
