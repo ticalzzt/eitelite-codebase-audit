@@ -323,6 +323,152 @@ def t8_full_prompt():
     assert "EITE Identity" in p
 
 # ============================================================
+# T9: Patch Integrity — 文件编辑后验证生效
+# ============================================================
+
+@test("prompt.py 含汇报铁律 5条", "T9")
+def t9_prompt_iron_law():
+    """防 shell 转义破坏：编辑后实际文件内容要正确。"""
+    src = (ROOT / "tical_code" / "core" / "prompt.py").read_text()
+    assert "Reporting Iron Law" in src, "prompt.py 缺 Reporting Iron Law"
+    assert "Evidence Mandate" in src
+    assert "Standard Report Format" in src
+    assert "Verification Chain" in src
+    assert "Anti-Fabrication" in src
+    assert "Summary Line" in src
+    assert "git diff" in src
+    assert "git log --oneline -1" in src
+
+@test("eite/verify.py 无 scan_reply 残留", "T9")
+def t9_no_scan_reply():
+    """verify.py scan_reply 已合并到 truthful_reporter，不应残留。"""
+    src = (ROOT / "tical_code" / "core" / "eite" / "verify.py").read_text()
+    assert "def scan_reply" not in src, "eite/verify.py 仍有 scan_reply"
+    assert "sig_verify" not in src, "未用 import sig_verify 残留"
+    assert "import os" not in src, "未用 import os 残留"
+    assert "import re" not in src, "未用 import re 残留"
+
+@test("signature.py 无 EITE_IMMUTABLE_FLAG 残留", "T9")
+def t9_no_immutable_flag():
+    src = (ROOT / "tical_code" / "core" / "eite" / "signature.py").read_text()
+    assert "EITE_IMMUTABLE_FLAG" not in src, "死常量 EITE_IMMUTABLE_FLAG 残留"
+    assert "import json" not in src, "未用 import json 残留"
+    assert "import os" not in src, "未用 import os 残留"
+
+@test("response_formatter.py 无 format_error/progress", "T9")
+def t9_no_dead_formatters():
+    src = (ROOT / "tical_code" / "core" / "response_formatter.py").read_text()
+    assert "def format_error" not in src
+    assert "def format_progress" not in src
+
+@test("unified_worker.py 无 heartbeat 引用", "T9")
+def t9_no_heartbeat():
+    src = (ROOT / "tical_code" / "core" / "unified_worker.py").read_text()
+    assert "heartbeat" not in src, "heartbeat 引用残留"
+
+@test("tool_executor.py 无死常量", "T9")
+def t9_no_dead_constants():
+    src = (ROOT / "tical_code" / "core" / "tool_executor.py").read_text()
+    assert "MAX_TOOL_ITERATIONS" not in src
+    assert "SOFT_HINT_AT" not in src
+    assert "HARD_STOP_AT" not in src
+    assert "conv_search" not in src
+
+@test("channel.py 无 reply() 别名", "T9")
+def t9_no_reply_alias():
+    src = (ROOT / "tical_code" / "core" / "channel.py").read_text()
+    assert "def reply(self, response)" not in src
+
+@test("clarify.py 无 format_clarify_questions", "T9")
+def t9_no_clarify_dead():
+    src = (ROOT / "tical_code" / "core" / "clarify.py").read_text()
+    assert "def format_clarify_questions" not in src
+
+@test("核心文件已删除确认", "T9")
+def t9_deleted_files():
+    dead = [
+        ROOT / "tical_code" / "core" / "verify.py",
+        ROOT / "tical_code" / "core" / "heartbeat.py",
+    ]
+    for f in dead:
+        assert not f.exists(), f"死文件仍存在: {f}"
+    # 确认 tical-code 特有文件
+    if (ROOT / "tical_code" / "core" / "verify.py").parent.exists():
+        pass  # parent dir always exists
+
+@test("modules/ 无 __future__ annotations", "T9")
+def t9_no_future_annotations():
+    mods = ["session_manager", "context_compactor", "loop_detector",
+            "truthful_reporter", "proposal_gate"]
+    for m in mods:
+        src = (ROOT / "tical_code" / "core" / "modules" / f"{m}.py").read_text()
+        assert "from __future__ import annotations" not in src, f"{m}.py 残留 __future__"
+
+@test("cron_scheduler.py 无 DEFAULT_TASK_TIMEOUT", "T9")
+def t9_no_task_timeout():
+    src = (ROOT / "tical_code" / "core" / "cron_scheduler.py").read_text()
+    assert "DEFAULT_TASK_TIMEOUT" not in src
+
+# ============================================================
+# T10: 部署一致性 — 跨 VPS 校验
+# ============================================================
+
+@test("Anchor vps 段完整性", "T10")
+def t10_anchor_vps():
+    anchor = Path.home() / "anchors" / "ops-anchor.json"
+    if not anchor.exists():
+        return
+    data = json.loads(anchor.read_text())
+    for name in ["sg", "taiwan", "oracle", "test", "kael"]:
+        assert name in data["vps"], f"锚点缺 {name}"
+        v = data["vps"][name]
+        assert "ip" in v
+        assert "ssh_user" in v
+        assert "ssh_key" in v
+        if "ssh_port" in v:
+            assert isinstance(v["ssh_port"], int), f"{name} port 不是数字"
+
+@test("eitelite VPS git 版本一致", "T10")
+def t10_vps_version_consistency():
+    """仅在 Test VPS 上有效（需 SSH 到其他 eitelite VPS）。"""
+    anchor = Path.home() / "anchors" / "ops-anchor.json"
+    if not anchor.exists():
+        return
+    vault = json.loads(anchor.read_text())
+    vps_list = vault.get("vps", {})
+    
+    # 本地版本
+    local = subprocess.run(["git", "log", "--oneline", "-1"],
+                          capture_output=True, text=True).stdout.strip()
+    
+    # 尝试 SSH 到同仓库 VPS 对比
+    targets = [("oracle", vps_list.get("oracle", {})),
+               ("test", vps_list.get("test", {}))]
+    
+    for name, info in targets:
+        ip = info.get("ip", "")
+        user = info.get("ssh_user", "ubuntu")
+        key = info.get("ssh_key", "id_rsa")
+        port = info.get("ssh_port", 22)
+        if not ip or ip == "localhost":
+            continue
+        key_path = os.path.expanduser(f"~/.ssh/{key}")
+        if not os.path.exists(key_path):
+            continue
+        
+        cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+               "-p", str(port), "-i", key_path,
+               f"{user}@{ip}",
+               f"cd {info.get('deploy_path', '/home/ubuntu/eitelite')} && git log --oneline -1"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            remote = r.stdout.strip()
+            local_hash = local.split()[0]
+            remote_hash = remote.split()[0]
+            assert local_hash == remote_hash, \
+                f"{name} 版本不同: local={local_hash} remote={remote_hash}"
+
+# ============================================================
 # Main
 # ============================================================
 

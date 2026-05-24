@@ -70,3 +70,27 @@
 | Worker 初始化不崩 | `Worker(cfg)` 在 mock config 下成功 | 删了 heartbeat 后 Worker 构造函数还引用了 HeartbeatManager |
 | 一次完整 message 处理 | 模拟一个简单请求走完 poll→LLM→tool→reply | — |
 | 5分钟 patrol 不崩 | Vigil patrol 调一次（mock 不写文件） | — |
+
+## T9 — 文件编辑完整性（防 Shell 转义破坏）
+
+| 检测 | 方法 | 本次事故 |
+|------|------|----------|
+| prompt.py 实际包含汇报铁律 5 条 | 直接读文件内容检查每个 section 标题 | SSH 编辑时 shell 转义了反引号和中文，patch 未生效 |
+| eite/verify.py 无 scan_reply 残留 | grep `def scan_reply` | 重复 claim 映射合并后还剩一段 |
+| signature.py 无死常量/imports | grep `EITE_IMMUTABLE_FLAG\|import json\|import os` | 定义但无人使用 |
+| response_formatter 无 format_error/progress | grep `def format_` | 从未被调用 |
+| unified_worker.py 无 heartbeat | grep `heartbeat` | 删了模块但构造函数还引用 |
+| tool_executor.py 无死常量 | grep `MAX_TOOL_ITERATIONS` | 定义但实际用 `max_iterations=60` |
+| channel.py 无 reply() | grep `def reply(self` | 别名从未使用 |
+| clarify.py 无 format_clarify_questions | grep `def format_clarify` | 从未被调用 |
+| 死文件已删除 | os.path.exists 检查 verify.py + heartbeat.py | 整个模块无人用 |
+| modules/ 无 __future__ | grep `from __future__` | 5个模块都有没用 |
+| cron_scheduler 无 DEFAULT_TASK_TIMEOUT | grep `DEFAULT_TASK_TIMEOUT` | 定义但从未引用 |
+
+## T10 — 部署一致性（跨 VPS）
+
+| 检测 | 方法 | 本次事故 |
+|------|------|----------|
+| Anchor 5台 VPS 信息完整 | 解析 ops-anchor.json 验证每个 VPS 有 ip/ssh_user/ssh_key | 有些 VPS 缺字段导致 SSH 配置失败 |
+| eitelite VPS git 版本一致 | 从 Test VPS SSH 到 Oracle/kael 对比 commit hash | oracle push 后覆盖了 SG 的版本 |
+| tical-code 独立仓库版本 | 从 SG SSH 到 Taiwan 对比 tical-code commit | 两个仓库各自独立，prompt 注入漏了 taiwan |
