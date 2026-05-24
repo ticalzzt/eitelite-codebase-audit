@@ -56,11 +56,40 @@ _ATTRIBUTION_WORDS = re.compile(
     re.I,
 )
 
+# ---------------------------------------------------------------------------
+# Rule 6: Evidence patterns — raw terminal output markers
+# ---------------------------------------------------------------------------
+
+# Evidence of raw git diff output (real diff markers, not just summary words)
+_DIFF_RAW_RE = re.compile(
+    r"(?m)^(?:diff --git |index |--- [ab]/|\+\+\+ [ab]/|@@ -\d+,\d+ \+\d+,\d+ @@|^\+[^+]|^-[^-])",
+)
+# Evidence of raw test output (real test runner output, not just "tests pass")
+_TEST_RAW_RE = re.compile(
+    r"(?m)^(?:Ran \d+ test|OK$|FAILED|FAIL|ERROR|\.+E\.+F\.+|PASSED|FAILED|test_\w+|passed|failed|skipped|warnings)",
+)
+# Evidence of a commit hash in context (7+ hex chars after "commit")
+_COMMIT_HASH_RE = re.compile(
+    r"commit [0-9a-f]{7,40}\b",
+)
+# Summary-only patterns: words that look like summaries without raw evidence
+_SUMMARY_ONLY_RE = re.compile(
+    r"(?i)(?:git diff (?:shows|indicates?|confirmed|verified|output|result))",
+    re.I,
+)
+# Git command patterns: bash commands that should produce raw output
+_GIT_DIFF_CMD_RE = re.compile(r"\bgit diff\b", re.I)
+_GIT_LOG_CMD_RE = re.compile(r"\bgit log\b", re.I)
+_TEST_CMD_RE = re.compile(
+    r"\b(pytest|python -m pytest|unittest|run_all|eite-test|nose|tox|pdm run test)\b",
+    re.I,
+)
+
 # Trust window: only count violations from the last 24 hours
 _TRUST_WINDOW_SECONDS = 86400
 
 class TruthfulReporter:
-    """5-rule truthful reporter with sliding-window trust tracking."""
+    """6-rule truthful reporter with sliding-window trust tracking."""
 
     _TRUST_FILE = ".trust_state.json"
 
@@ -134,8 +163,79 @@ class TruthfulReporter:
             logger.exception("record_action failed")
 
     # ------------------------------------------------------------------
-    # 5-rule scan
+    # 6-rule scan (5 original + Rule 6: Evidence Rule)
     # ------------------------------------------------------------------
+
+    def _check_evidence_rule(self, reply_text: str) -> list[dict]:
+        """Rule 6: if tools included git-diff/git-log/test commands,
+        verify the reply contains raw terminal output, not just a summary."""
+        violations: list[dict] = []
+
+        is_evidence_summary = bool(_SUMMARY_ONLY_RE.search(reply_text))
+        has_raw_diff = bool(_DIFF_RAW_RE.search(reply_text))
+        has_raw_test = bool(_TEST_RAW_RE.search(reply_text))
+        has_commit_hash = bool(_COMMIT_HASH_RE.search(reply_text))
+
+        for action in self._actions:
+            if action["tool_name"] != "bash":
+                continue
+            cmd = str(action.get("args", {}).get("command", ""))
+
+            # --- git diff check ---
+            if _GIT_DIFF_CMD_RE.search(cmd):
+                if is_evidence_summary and not has_raw_diff:
+                    violations.append({
+                        "rule": 6,
+                        "claim": "git_diff_summary_only",
+                        "correction": (
+                            "You cited git diff output but only summarized it. "
+                            "You MUST include the raw terminal output of `git diff` "
+                            "— lines starting with diff --git, --- a/, +++ b/, @@, +, -."
+                        ),
+                    })
+                    break  # one violation per action type
+
+                if not has_raw_diff and not is_evidence_summary:
+                    # Even worse: claimed git diff but included NO evidence at all
+                    violations.append({
+                        "rule": 6,
+                        "claim": "git_diff_no_evidence",
+                        "correction": (
+                            "You claimed a git diff operation but did not include any "
+                            "raw diff output. Attach the actual `git diff` terminal output."
+                        ),
+                    })
+                    break
+
+            # --- test runner check ---
+            if _TEST_CMD_RE.search(cmd):
+                if not has_raw_test:
+                    violations.append({
+                        "rule": 6,
+                        "claim": "test_output_missing",
+                        "correction": (
+                            "You ran tests but did not include raw test output. "
+                            "Include the terminal stdout of the test run "
+                            "(test count, PASS/FAIL, any errors)."
+                        ),
+                    })
+                    break
+
+            # --- git log check ---
+            if _GIT_LOG_CMD_RE.search(cmd):
+                if not has_commit_hash:
+                    violations.append({
+                        "rule": 6,
+                        "claim": "git_log_no_hash",
+                        "correction": (
+                            "You ran `git log` but did not include a commit hash "
+                            "in your reply. Include the actual hash in format "
+                            "'commit xxxxxxx'."
+                        ),
+                    })
+                    break
+
+        return violations
 
     def scan_reply(self, reply_text: str) -> list[dict]:
         violations: list[dict] = []
@@ -193,6 +293,10 @@ class TruthfulReporter:
                     "claim": "attribution missing",
                     "correction": "This information was obtained via search/fetch, not from direct knowledge.",
                 })
+
+        # Rule 6: Evidence — if git/test tools were used, raw output must be in reply
+        evidence_violations = self._check_evidence_rule(reply_text)
+        violations.extend(evidence_violations)
 
         if violations:
             self._record_violations(len(violations))

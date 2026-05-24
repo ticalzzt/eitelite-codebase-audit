@@ -105,6 +105,17 @@ class AnchorHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not_found"}, 404)
 
     def do_POST(self):
+        # Task queue endpoints
+        if self.path == "/anchor/task/enqueue":
+            self._task_enqueue()
+            return
+        elif self.path == "/anchor/task/dequeue":
+            self._task_dequeue()
+            return
+        elif self.path == "/anchor/task/complete":
+            self._task_complete()
+            return
+
         if self.path != "/anchor":
             self._send_json({"error": "not_found"}, 404)
             return
@@ -149,19 +160,6 @@ class AnchorHandler(BaseHTTPRequestHandler):
         pass
 
     # ============ Task Queue ============
-
-    def do_TASK(self, method):
-        """Handle /anchor/task/* endpoints with correct HTTP method."""
-        if self.path == "/anchor/task/enqueue" and method == "POST":
-            self._task_enqueue()
-        elif self.path == "/anchor/task/dequeue" and method == "POST":
-            self._task_dequeue()
-        elif self.path == "/anchor/task/complete" and method == "POST":
-            self._task_complete()
-        elif self.path == "/anchor/task/list" and method == "GET":
-            self._task_list()
-        else:
-            self._send_json({"error": "not_found"}, 404)
 
     def _task_enqueue(self):
         try:

@@ -135,6 +135,43 @@ def t2_tr_pass():
     v = r.scan_reply("已修复")
     assert len(v) == 0, f"Should pass with verified bash: {v}"
 
+@test("Rule 6: catches summary-only git diff", "T2")
+def t2_evidence_summary():
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    r = TruthfulReporter(workspace="/tmp/tr_ev1")
+    r.record_action("bash", {"command": "git diff"}, {"stdout": "+some code"}, verified=True)
+    # Reply says "git diff shows changes" but no raw diff markers
+    v = r.scan_reply("Already fixed, git diff shows changes were made")
+    assert any(vv["rule"] == 6 for vv in v), f"Should catch summary-only: {v}"
+
+@test("Rule 6: passes with raw diff output", "T2")
+def t2_evidence_raw_diff():
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    r = TruthfulReporter(workspace="/tmp/tr_ev2")
+    r.record_action("bash", {"command": "git diff"}, {"stdout": "+some code"}, verified=True)
+    # Reply includes actual raw diff markers
+    v = r.scan_reply(
+        "Fixed the config parser.\n"
+        "```\ndiff --git a/config.py b/config.py\n"
+        "--- a/config.py\n+++ b/config.py\n"
+        "@@ -10,7 +10,7 @@\n"
+        " old value\n"
+        "+new value\n"
+        "```\n"
+        "commit abcdef1"
+    )
+    ev = [vv for vv in v if vv["rule"] == 6]
+    assert len(ev) == 0, f"Should pass with raw diff: {ev}"
+
+@test("Rule 6: catches missing test output", "T2")
+def t2_evidence_no_test():
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    r = TruthfulReporter(workspace="/tmp/tr_ev3")
+    r.record_action("bash", {"command": "pytest"}, {"stdout": ".........", "exit_code": 0}, verified=True)
+    v = r.scan_reply("All tests pass, no issues")
+    ev = [vv for vv in v if vv["rule"] == 6]
+    assert len(ev) > 0, f"Should catch missing test output: {v}"
+
 # ============================================================
 # T3: Tool Inventory
 # ============================================================
