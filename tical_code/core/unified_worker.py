@@ -285,49 +285,9 @@ class Worker:
 
         if isinstance(task_desc, dict):
             task_desc = str(task_desc.get("task", task_desc))
-        task_desc_str = str(task_desc)[:200]
+        task_desc_str = str(task_desc)[:100]
 
-        # Handle [cancel] and [resume] control messages
-        if task_desc_str.startswith("[cancel]"):
-            parts = task_desc_str.split()
-            if len(parts) >= 2:
-                cancel_id = parts[1].strip()
-                cancel_flag = Path.home() / ".persistent" / cancel_id / "cancel.flag"
-                cancel_flag.parent.mkdir(parents=True, exist_ok=True)
-                cancel_flag.write_text("cancel")
-                logger.info(f"[autonomous] cancel flag set for task #{cancel_id}")
-            return True
-
-        if task_desc_str.startswith("[resume]"):
-            parts = task_desc_str.split()
-            if len(parts) >= 2:
-                resume_id = parts[1].strip()
-                state_file = Path.home() / ".persistent" / str(resume_id) / "state.json"
-                if state_file.exists():
-                    desc = json.loads(state_file.read_text()).get("description", "")
-                    from tical_code.core.persistent_worker import PersistentWorker
-                    pw = PersistentWorker(worker=self, task_id=int(resume_id), task_desc=desc)
-                    pw.run()
-                else:
-                    logger.warning(f"[autonomous] resume: no state for task #{resume_id}")
-            return True
-
-        # Determine if this task should use persistent mode
-        from tical_code.core.persistent_worker import task_is_large
-        if task_is_large(task_desc_str):
-            logger.info(f"[autonomous] persistent mode for task #{task_id}")
-            try:
-                from tical_code.core.persistent_worker import PersistentWorker
-                pw = PersistentWorker(
-                    worker=self, task_id=task_id, task_desc=task_desc_str,
-                )
-                pw.run()
-            except Exception as e:
-                logger.error(f"[autonomous] persistent worker error: {e}\n{traceback.format_exc()}")
-            # Persistent mode handles its own reporting and completion
-            return True
-        else:
-            logger.info(f"[autonomous] dequeued task #{task_id}: {task_desc_str}")
+        logger.info(f"[autonomous] dequeued task #{task_id}: {task_desc_str}")
 
         # 3. Report start to anchor
         self._anchor_api("anchor", "POST", {
