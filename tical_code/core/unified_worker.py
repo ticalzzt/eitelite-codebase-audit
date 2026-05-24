@@ -5,6 +5,7 @@ Single loop: poll channels → LLM call → tool execute → format → reply.
 """
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -91,6 +92,14 @@ class Worker:
         # Usage tracking
         self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
         
+        # CDP browser config - set env for tool_executor to pick up
+        cdp_url = cfg.get("cdp_url", "")
+        if cdp_url:
+            os.environ["CDP_URL"] = cdp_url
+            logger.info(f"CDP browser: {cdp_url}")
+        if not cfg.get("cdp_headless", True):
+            os.environ["CDP_HEADLESS"] = "0"
+
         # Vigil — AI safety runtime (v1: pure software, no hardware)
         try:
             self.vigil = build_vigil()
@@ -100,7 +109,6 @@ class Worker:
             self.vigil = None
             self._vigil_enabled = False
             logger.warning("Vigil not available")
-
 
         self.system_prompt = build_system_prompt(
             name=cfg['name'],

@@ -49,6 +49,10 @@ def load_config() -> dict:
         except Exception:
             pass
 
+    # CDP browser config (from config.json or env)
+    cfg["cdp_url"] = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
+    cfg["cdp_headless"] = os.environ.get("CDP_HEADLESS", "1") == "1"
+
     # Env overrides (highest priority)
     env_name = os.environ.get("WORKER_NAME", "")
     if env_name:

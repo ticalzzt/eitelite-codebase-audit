@@ -6,5 +6,7 @@
     "ai_endpoint": "https://api.deepseek.com/v1",
     "chat_url": "http://REPLACED_TAIWAN_IP:8080",
     "chat_key": "REPLACED_SHARED_KEY",
-    "tg_token": ""
+    "tg_token": "",
+    "cdp_url": "http://127.0.0.1:9222",
+    "cdp_headless": true
 }
