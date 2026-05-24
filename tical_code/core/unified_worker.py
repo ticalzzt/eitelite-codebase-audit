@@ -287,16 +287,34 @@ class Worker:
             task_desc = str(task_desc.get("task", task_desc))
         task_desc_str = str(task_desc)[:200]
 
-        # Determine if this task should use persistent mode
-        _large_keywords = ["重构", "实现", "多个", "全部", "migrate", "refactor",
-                           "implement", "multiple", "all", "每一个", "create",
-                           "build", "整个", "complete"]
-        _use_persistent = (
-            len(task_desc_str) > 200
-            or any(kw in task_desc_str for kw in _large_keywords)
-        )
+        # Handle [cancel] and [resume] control messages
+        if task_desc_str.startswith("[cancel]"):
+            parts = task_desc_str.split()
+            if len(parts) >= 2:
+                cancel_id = parts[1].strip()
+                cancel_flag = Path.home() / ".persistent" / cancel_id / "cancel.flag"
+                cancel_flag.parent.mkdir(parents=True, exist_ok=True)
+                cancel_flag.write_text("cancel")
+                logger.info(f"[autonomous] cancel flag set for task #{cancel_id}")
+            return True
 
-        if _use_persistent:
+        if task_desc_str.startswith("[resume]"):
+            parts = task_desc_str.split()
+            if len(parts) >= 2:
+                resume_id = parts[1].strip()
+                state_file = Path.home() / ".persistent" / str(resume_id) / "state.json"
+                if state_file.exists():
+                    desc = json.loads(state_file.read_text()).get("description", "")
+                    from tical_code.core.persistent_worker import PersistentWorker
+                    pw = PersistentWorker(worker=self, task_id=int(resume_id), task_desc=desc)
+                    pw.run()
+                else:
+                    logger.warning(f"[autonomous] resume: no state for task #{resume_id}")
+            return True
+
+        # Determine if this task should use persistent mode
+        from tical_code.core.persistent_worker import task_is_large
+        if task_is_large(task_desc_str):
             logger.info(f"[autonomous] persistent mode for task #{task_id}")
             try:
                 from tical_code.core.persistent_worker import PersistentWorker
