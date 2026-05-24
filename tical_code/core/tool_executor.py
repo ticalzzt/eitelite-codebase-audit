@@ -720,6 +720,30 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "anchor_ping",
+            "description": "Register / heartbeat to the Live Anchor server. Call on startup + every 60s to keep alive.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "Status: 'online', 'busy', 'maintenance'"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "anchor_list",
+            "description": "List all registered agents from the Live Anchor.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "xurl_reply",
             "description": "Reply to an existing tweet",
             "parameters": {
@@ -1973,6 +1997,43 @@ def exec_xurl_browser_timeline(args):
         return {"error": f"browser_timeline: {e}"}
 
 
+def exec_anchor_ping(args):
+    """Register heartbeat to live anchor server."""
+    import json, urllib.request
+    try:
+        name = os.environ.get("WORKER_NAME", "unknown")
+        hostname = __import__("os").uname().nodename
+        status = args.get("status", "online")
+        payload = json.dumps({"name": name, "hostname": hostname, "status": status}).encode()
+        anchor_url = os.environ.get("ANCHOR_URL", "http://REPLACED_TAIWAN_IP:9878")
+        req = urllib.request.Request(
+            f"{anchor_url.rstrip('/')}/anchor", data=payload,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+        return {"ok": True, "name": name}
+    except Exception as e:
+        return {"error": f"anchor_ping: {e}"}
+
+
+def exec_anchor_list(args):
+    """List all agents from live anchor."""
+    import json, urllib.request
+    try:
+        anchor_url = os.environ.get("ANCHOR_URL", "http://REPLACED_TAIWAN_IP:9878")
+        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/anchor")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        vps = data.get("vps", {})
+        agents = [{"name": n, "ip": i.get("ip",""), "alive": i.get("alive",False),
+                    "last_seen": i.get("last_seen_human",""), "system": i.get("system","")}
+                  for n, i in vps.items()]
+        return {"ok": True, "agents": agents, "live": data.get("_live", {})}
+    except Exception as e:
+        return {"error": f"anchor_list: {e}"}
+
+
 # ============ Secret Redaction ============
 
 _DEFAULT_REDACTION_PATTERNS = [
@@ -2040,6 +2101,8 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "xurl_browser_reply": exec_xurl_browser_reply,
         "xurl_browser_inject_cookies": exec_xurl_browser_inject_cookies,
         "xurl_browser_timeline": exec_xurl_browser_timeline,
+        "anchor_ping": exec_anchor_ping,
+        "anchor_list": exec_anchor_list,
         "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),

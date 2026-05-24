@@ -53,6 +53,7 @@ def load_config() -> dict:
     cfg["cdp_url"] = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
     cfg["cdp_headless"] = os.environ.get("CDP_HEADLESS", "1") == "1"
     cfg["cdp_proxy"] = os.environ.get("CDP_PROXY", "")
+    cfg["anchor_url"] = os.environ.get("ANCHOR_URL", "http://REPLACED_TAIWAN_IP:9878")
 
     # Env overrides (highest priority)
     env_name = os.environ.get("WORKER_NAME", "")

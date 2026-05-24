@@ -121,6 +121,9 @@ class Worker:
             target_model=cfg.get("ai_model", ""),
         )
 
+        # Live Anchor: register on startup
+        self._anchor_ping(cfg)
+
         # EITE identity layer
         eite_init(identity_id=cfg['name'], workspace=cfg.get("workspace", ""))
         eite_verify = get_verify()
@@ -163,6 +166,27 @@ class Worker:
             return socket.gethostname()
         except Exception:
             return "unknown"
+
+    def _anchor_ping(self, cfg: dict):
+        """Ping the live anchor server on startup."""
+        import json, urllib.request, threading
+        name = cfg.get("name", "unknown")
+        anchor_url = os.environ.get("ANCHOR_URL", "http://REPLACED_TAIWAN_IP:9878")
+        payload = json.dumps({
+            "name": name, "hostname": self._get_hostname(),
+            "status": "online", "version": f"EITElite {cfg.get('ai_model','?')}",
+        }).encode()
+        def _do_ping():
+            try:
+                req = urllib.request.Request(
+                    f"{anchor_url.rstrip('/')}/anchor", data=payload,
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    logger.info(f"Anchor ping OK ({name})")
+            except Exception as e:
+                logger.warning(f"Anchor ping failed: {e}")
+        threading.Thread(target=_do_ping, daemon=True).start()
 
     def run(self):
         """Main loop: poll channels → handle messages → sleep."""
