@@ -8,5 +8,6 @@
     "chat_key": "REPLACED_SHARED_KEY",
     "tg_token": "",
     "cdp_url": "http://127.0.0.1:9222",
-    "cdp_headless": true
+    "cdp_headless": true,
+    "cdp_proxy": ""
 }

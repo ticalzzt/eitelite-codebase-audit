@@ -695,6 +695,31 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "xurl_browser_inject_cookies",
+            "description": "Inject X.com cookies into the CDP browser to restore login session. Call before posting for autonomous X account management.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cookies_json": {"type": "string", "description": "X.com cookies as JSON array. Each: {name, value, domain:'.x.com', path:'/', httpOnly:true, secure:true, sameSite:'Lax', expirationDate:过期时间戳}"}
+                },
+                "required": ["cookies_json"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "xurl_browser_timeline",
+            "description": "Read X/Twitter home timeline via CDP browser. No API cost.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "xurl_reply",
             "description": "Reply to an existing tweet",
             "parameters": {
@@ -1106,7 +1131,8 @@ def _get_browser():
         import os
         cdp_url = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
         headless = os.environ.get("CDP_HEADLESS", "1") == "1"
-        _executor_browser = BrowserController(cdp_url=cdp_url, headless=headless)
+        proxy = os.environ.get("CDP_PROXY", "") or None
+        _executor_browser = BrowserController(cdp_url=cdp_url, headless=headless, proxy=proxy)
         import asyncio
         try:
             asyncio.run(_executor_browser.start())
@@ -1851,6 +1877,102 @@ def exec_xurl_browser_reply(args):
         return {"error": f"browser_reply: {e}"}
 
 
+def exec_xurl_browser_inject_cookies(args):
+    """Inject X.com cookies into CDP browser session to restore login."""
+    import asyncio, json
+    try:
+        cookies_raw = args.get("cookies_json", "")
+        if not cookies_raw:
+            return {"error": "cookies_json required"}
+        cookies = json.loads(cookies_raw) if isinstance(cookies_raw, str) else cookies_raw
+        if not isinstance(cookies, list):
+            cookies = [cookies]
+
+        bc = _get_browser()
+        asyncio.run(bc.navigate("https://x.com"))
+        asyncio.run(asyncio.sleep(2))
+
+        for c in cookies:
+            cdp_cookie = {
+                "name": c.get("name", c.get("key", "")),
+                "value": c.get("value", ""),
+                "domain": c.get("domain", ".x.com"),
+                "path": c.get("path", "/"),
+                "httpOnly": c.get("httpOnly", True),
+                "secure": c.get("secure", True),
+            }
+            if "sameSite" in c:
+                cdp_cookie["sameSite"] = c["sameSite"]
+            if "expirationDate" in c:
+                cdp_cookie["expires"] = c["expirationDate"]
+            elif "expiry" in c:
+                cdp_cookie["expires"] = c["expiry"]
+            asyncio.run(bc._conn.send("Network.setCookie", cdp_cookie))
+
+        asyncio.run(asyncio.sleep(1))
+        asyncio.run(bc.navigate("https://x.com/home"))
+        asyncio.run(asyncio.sleep(3))
+
+        title = asyncio.run(bc.get_title())
+        url = asyncio.run(bc.get_url())
+        logged_in = "login" not in url.lower() and "x.com/home" in url
+
+        return {
+            "ok": logged_in,
+            "cookies_injected": len(cookies),
+            "logged_in": logged_in,
+            "title": title, "url": url,
+            "tip": "Call xurl_browser_timeline to read feed, xurl_browser_post to tweet"
+        }
+    except Exception as e:
+        return {"error": f"inject_cookies: {e}"}
+
+
+def exec_xurl_browser_timeline(args):
+    """Read X home timeline via CDP browser."""
+    import asyncio, json
+    try:
+        bc = _get_browser()
+        asyncio.run(bc.navigate("https://x.com/home"))
+        asyncio.run(asyncio.sleep(3))
+
+        asyncio.run(bc._conn.send("Runtime.evaluate", {
+            "expression": "window.scrollBy(0, 800)",
+            "returnByValue": True,
+        }))
+        asyncio.run(asyncio.sleep(2))
+
+        js = """
+        (() => {
+            const tweets = [];
+            const articles = document.querySelectorAll('article[data-testid="tweet"]');
+            articles.forEach((a, i) => {
+                const textEl = a.querySelector('[data-testid="tweetText"]');
+                const timeEl = a.querySelector('time');
+                const linkEl = a.querySelector('a[href*="/status/"]');
+                const nameEl = a.querySelector('[data-testid="User-Name"]');
+                tweets.push({
+                    index: i,
+                    text: textEl ? textEl.textContent.slice(0, 200) : '',
+                    time: timeEl ? timeEl.getAttribute('datetime') : '',
+                    url: linkEl ? 'https://x.com' + linkEl.getAttribute('href') : '',
+                    author: nameEl ? nameEl.textContent.slice(0, 60) : '',
+                });
+            });
+            return JSON.stringify(tweets);
+        })();
+        """
+        result = asyncio.run(bc._conn.send("Runtime.evaluate", {
+            "expression": js,
+            "returnByValue": True,
+        }))
+        raw = result.get("result", {}).get("value", "[]")
+        tweets = json.loads(raw) if isinstance(raw, str) else raw
+        return {"ok": True, "tweets": tweets, "count": len(tweets)}
+    except Exception as e:
+        return {"error": f"browser_timeline: {e}"}
+
+
 # ============ Secret Redaction ============
 
 _DEFAULT_REDACTION_PATTERNS = [
@@ -1916,6 +2038,8 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "xurl_timeline": exec_xurl_timeline,
         "xurl_browser_post": exec_xurl_browser_post,
         "xurl_browser_reply": exec_xurl_browser_reply,
+        "xurl_browser_inject_cookies": exec_xurl_browser_inject_cookies,
+        "xurl_browser_timeline": exec_xurl_browser_timeline,
         "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),

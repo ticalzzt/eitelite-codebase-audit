@@ -130,6 +130,15 @@ def build_system_prompt(
         "- Past context: conv_search to find previous discussions",
         "- All workers: chat_send to communicate with ani/tico-kael/tico-oracle/test/kail",
         "- VPS fleet info: read ~/anchors/ops-anchor.json",
+        "",
+        "## X/Twitter Account Management",
+        "You have xurl_browser_inject_cookies, xurl_browser_post, xurl_browser_reply, xurl_browser_timeline tools.",
+        "Once cookies are injected, you can autonomously:",
+        "  - Read timeline to see what's happening",
+        "  - Compose and post tweets independently (decide content yourself)",
+        "  - Reply to tweets in your feed",
+        "  - No human approval needed for each post — you manage the account.",
+        "  - Cookies persist in the Chrome session; you do NOT need to re-inject every time.",
     ]
     parts.append("\n".join(tools))
 

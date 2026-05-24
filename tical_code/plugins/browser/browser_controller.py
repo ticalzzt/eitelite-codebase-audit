@@ -88,11 +88,13 @@ class BrowserController:
     """
 
     def __init__(self, cdp_url: str = None, headless: bool = True,
-                 user_data_dir: str = None, window_size: tuple = (1280, 720)):
+                 user_data_dir: str = None, window_size: tuple = (1280, 720),
+                 proxy: str = None):
         self._cdp_url = cdp_url
         self._headless = headless
         self._user_data_dir = user_data_dir
         self._window_size = window_size
+        self._proxy = proxy
         self._conn = None
         self._page_id = None  # Target ID for the page we control
         self._chrome_proc = None
@@ -425,6 +427,9 @@ class BrowserController:
         if self._headless:
             cmd += ["--headless", "--disable-gpu", "--no-sandbox",
                     "--disable-dev-shm-usage"]
+        if self._proxy:
+            cmd += [f"--proxy-server={self._proxy}"]
+            logger.info(f"Chrome proxy: {self._proxy}")
 
         logger.info(f"Launching Chrome: {' '.join(cmd[:4])}...")
         self._chrome_proc = subprocess.Popen(

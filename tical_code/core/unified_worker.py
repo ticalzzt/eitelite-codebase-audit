@@ -99,6 +99,10 @@ class Worker:
             logger.info(f"CDP browser: {cdp_url}")
         if not cfg.get("cdp_headless", True):
             os.environ["CDP_HEADLESS"] = "0"
+        cdp_proxy = cfg.get("cdp_proxy", "")
+        if cdp_proxy:
+            os.environ["CDP_PROXY"] = cdp_proxy
+            logger.info(f"CDP proxy: {cdp_proxy}")
 
         # Vigil — AI safety runtime (v1: pure software, no hardware)
         try:
