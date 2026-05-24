@@ -2005,9 +2005,9 @@ def exec_anchor_ping(args):
         hostname = __import__("os").uname().nodename
         status = args.get("status", "online")
         payload = json.dumps({"name": name, "hostname": hostname, "status": status}).encode()
-        anchor_url = os.environ.get("ANCHOR_URL", "http://REPLACED_TAIWAN_IP:9878")
+        anchor_url = os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
         req = urllib.request.Request(
-            f"{anchor_url.rstrip('/')}/anchor", data=payload,
+            anchor_url, data=payload,
             headers={"Content-Type": "application/json"}, method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -2021,8 +2021,8 @@ def exec_anchor_list(args):
     """List all agents from live anchor."""
     import json, urllib.request
     try:
-        anchor_url = os.environ.get("ANCHOR_URL", "http://REPLACED_TAIWAN_IP:9878")
-        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/anchor")
+        anchor_url = os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
+        req = urllib.request.Request(anchor_url)
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
         vps = data.get("vps", {})

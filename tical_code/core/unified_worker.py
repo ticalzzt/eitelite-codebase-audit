@@ -171,7 +171,7 @@ class Worker:
         """Ping the live anchor server on startup."""
         import json, urllib.request, threading
         name = cfg.get("name", "unknown")
-        anchor_url = os.environ.get("ANCHOR_URL", "http://REPLACED_TAIWAN_IP:9878")
+        anchor_url = os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
         payload = json.dumps({
             "name": name, "hostname": self._get_hostname(),
             "status": "online", "version": f"EITElite {cfg.get('ai_model','?')}",
@@ -179,7 +179,7 @@ class Worker:
         def _do_ping():
             try:
                 req = urllib.request.Request(
-                    f"{anchor_url.rstrip('/')}/anchor", data=payload,
+                    anchor_url, data=payload,
                     headers={"Content-Type": "application/json"}, method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=10) as resp:
