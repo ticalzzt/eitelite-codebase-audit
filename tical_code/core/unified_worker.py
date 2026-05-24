@@ -285,9 +285,31 @@ class Worker:
 
         if isinstance(task_desc, dict):
             task_desc = str(task_desc.get("task", task_desc))
-        task_desc_str = str(task_desc)[:100]
+        task_desc_str = str(task_desc)[:200]
 
-        logger.info(f"[autonomous] dequeued task #{task_id}: {task_desc_str}")
+        # Determine if this task should use persistent mode
+        _large_keywords = ["重构", "实现", "多个", "全部", "migrate", "refactor",
+                           "implement", "multiple", "all", "每一个", "create",
+                           "build", "整个", "complete"]
+        _use_persistent = (
+            len(task_desc_str) > 200
+            or any(kw in task_desc_str for kw in _large_keywords)
+        )
+
+        if _use_persistent:
+            logger.info(f"[autonomous] persistent mode for task #{task_id}")
+            try:
+                from tical_code.core.persistent_worker import PersistentWorker
+                pw = PersistentWorker(
+                    worker=self, task_id=task_id, task_desc=task_desc_str,
+                )
+                pw.run()
+            except Exception as e:
+                logger.error(f"[autonomous] persistent worker error: {e}\n{traceback.format_exc()}")
+            # Persistent mode handles its own reporting and completion
+            return True
+        else:
+            logger.info(f"[autonomous] dequeued task #{task_id}: {task_desc_str}")
 
         # 3. Report start to anchor
         self._anchor_api("anchor", "POST", {
