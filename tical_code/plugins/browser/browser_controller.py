@@ -145,7 +145,7 @@ class BrowserController:
                     self._chrome_proc.kill()
             except Exception:
                 pass
-        # Clean up temp user data dir (蒸馏自 undetected-chromedriver quit lines 778-796)
+        # Clean up temp user data dir (distilled from undetected-chromedriver quit lines 778-796)
         if self._user_data_dir and os.path.exists(self._user_data_dir):
             for _ in range(5):
                 try:
@@ -191,7 +191,7 @@ class BrowserController:
         self._conn = CDPConnection(page_ws_url)
         await self._conn.connect()
 
-    # ---- Stealth (蒸馏自 undetected-chromedriver + browser-use) ----
+    # ---- Stealth (distilled from undetected-chromedriver + browser-use) ----
 
     async def _apply_stealth(self):
         """Apply comprehensive anti-detection measures.
