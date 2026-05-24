@@ -127,13 +127,20 @@ def _bash_safety_check(command: str) -> Optional[str]:
         target = redirect_match.group(1)
         # Skip /dev/ paths (devnull, stderr, stdin are not real file writes)
         if not target.startswith(("/dev/", "/dev")):
-            target_path = Path(target).expanduser().resolve()
-            if WORKSPACE and not str(target_path).startswith(WORKSPACE):
-                write_outside = True
+            # Skip allowed write paths (/tmp, /var/tmp etc.)
+            if any(target.startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
+                pass  # allow
+            else:
+                target_path = Path(target).expanduser().resolve()
+                if WORKSPACE and not str(target_path).startswith(WORKSPACE):
+                    write_outside = True
     for cmd_prefix in [r'\bcp\s+', r'\bmv\s+']:
         cp_mv_match = re.search(cmd_prefix + r'.*\s+(\S+)\s*$', command)
         if cp_mv_match:
             dest = cp_mv_match.group(1)
+            # Skip allowed write paths (/tmp, /var/tmp etc.)
+            if any(dest.startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
+                continue
             dest_path = Path(dest).expanduser().resolve()
             if WORKSPACE and not str(dest_path).startswith(WORKSPACE):
                 write_outside = True
@@ -167,6 +174,9 @@ def _workspace_path(path: str) -> Path:
 def _workspace_write_path(path: str) -> Optional[Path]:
     """Resolve write path. Returns None if outside workspace."""
     p = Path(path).expanduser().resolve()
+    # Skip allowed write paths (/tmp, /var/tmp etc.)
+    if any(str(p).startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
+        return p
     if WORKSPACE and not str(p).startswith(WORKSPACE):
         return None
     return p
