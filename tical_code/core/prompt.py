@@ -127,7 +127,7 @@ def build_system_prompt(
         "- Sub-agents: delegate tasks for parallel processing",
         "- Cron: schedule recurring tasks",
         "- Web: use web_fetch tool (not bash) - fetches and extracts any URL into readable text",
-        "- Past context: conv_search to find previous discussions",
+        "- Past context: use session_search to find previous discussions",
         "- All workers: chat_send to communicate with ani/tico-kael/tico-oracle/test/kail",
         "- VPS fleet info: read ~/anchors/ops-anchor.json",
         "",

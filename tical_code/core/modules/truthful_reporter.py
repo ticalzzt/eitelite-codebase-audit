@@ -157,7 +157,7 @@ class TruthfulReporter:
                 "evidence_hash": hashlib.sha256(raw.encode()).hexdigest(),
                 "has_warning": "warning" in raw.lower() or "truncated" in raw.lower(),
                 "is_local_only": tool_name in ("file_write", "file_read", "state_save", "memory_save"),
-                "is_fetch": tool_name in ("web_fetch", "conv_search"),
+                "is_fetch": tool_name in ("web_fetch",),
             })
         except Exception:
             logger.exception("record_action failed")

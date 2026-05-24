@@ -13,7 +13,7 @@ logger = logging.getLogger("tical-code.proposal_gate")
 # Bash classification helpers
 # ---------------------------------------------------------------------------
 
-_READ_TOOLS = {"file_read", "memory_load", "conv_search", "web_fetch", "chat_send"}
+_READ_TOOLS = {"file_read", "memory_load", "web_fetch", "chat_send"}
 _WRITE_TOOLS = {"file_write", "state_save"}
 
 _BASH_READ_PREFIXES = re.compile(
