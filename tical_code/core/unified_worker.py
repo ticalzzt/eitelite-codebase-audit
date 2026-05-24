@@ -104,6 +104,9 @@ class Worker:
             os.environ["CDP_PROXY"] = cdp_proxy
             logger.info(f"CDP proxy: {cdp_proxy}")
 
+        # Set env for tools that depend on WORKER_NAME
+        os.environ["WORKER_NAME"] = cfg["name"]
+
         # Vigil — AI safety runtime (v1: pure software, no hardware)
         try:
             self.vigil = build_vigil()
@@ -188,13 +191,131 @@ class Worker:
                 logger.warning(f"Anchor ping failed: {e}")
         threading.Thread(target=_do_ping, daemon=True).start()
 
+    # ------------------------------------------------------------------
+    # Anchor API helper
+    # ------------------------------------------------------------------
+
+    def _anchor_api(self, path: str, method: str = "GET", data: dict | None = None) -> dict | None:
+        """Make an HTTP call to the live anchor server. Returns parsed JSON or None."""
+        import json, urllib.request, urllib.error
+        anchor_url = os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
+        url = f"{anchor_url.rstrip('/')}/{path.lstrip('/')}"
+        try:
+            payload = json.dumps(data).encode() if data else None
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"}, method=method,
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None  # no workers / no tasks — fine
+            logger.warning(f"anchor_api HTTP {e.code}: {path}")
+            return None
+        except Exception as e:
+            logger.debug(f"anchor_api {method} {path}: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Rescue check — find orphaned tasks from dead workers
+    # ------------------------------------------------------------------
+
+    def _rescue_check(self) -> list[dict]:
+        """Check anchor for dead workers with incomplete tasks."""
+        data = self._anchor_api("anchor")
+        if not data or not isinstance(data, dict):
+            return []
+        vps = data.get("vps", {})
+        orphans = []
+        for name, info in vps.items():
+            if name == self.name:
+                continue  # skip self
+            alive = info.get("alive", False)
+            current = info.get("current_task", "")
+            result = info.get("result", "")
+            if not alive and current and not result:
+                orphans.append({
+                    "name": name, "task": current,
+                    "progress": info.get("progress", ""),
+                })
+        return orphans
+
+    # ------------------------------------------------------------------
+    # Autonomous cycle — execute queued tasks without human input
+    # ------------------------------------------------------------------
+
+    def _autonomous_cycle(self) -> bool:
+        """Run one autonomous cycle: rescue → dequeue → execute → report.
+        
+        Returns True if a task was processed, False if queue was empty.
+        This blocks during LLM processing (uses _handle_message).
+        """
+        # 1. Rescue — claim orphaned tasks
+        orphans = self._rescue_check()
+        if orphans:
+            for o in orphans:
+                logger.warning(
+                    f"[autonomous] orphaned task from {o['name']}: "
+                    f"{o['task'][:60]} ({o.get('progress','')})"
+                )
+                # Mark this worker as having taken over
+                self._anchor_api("anchor", "POST", {
+                    "name": self.name, "status": "online",
+                    "current_task": f"[rescue:{o['name']}] {o['task']}",
+                    "progress": o.get("progress", "0%"), "task_type": "rescue",
+                })
+
+        # 2. Dequeue — pick up next task assigned to this worker
+        data = self._anchor_api("task/dequeue", "POST", {"worker": self.name})
+        if not data or not isinstance(data, dict):
+            return False
+        task_desc = data.get("task", "")
+        task_id = data.get("task_id", 0)
+        if not task_desc:
+            return False
+
+        logger.info(f"[autonomous] dequeued task #{task_id}: {task_desc[:80]}")
+
+        # 3. Report start to anchor
+        self._anchor_api("anchor", "POST", {
+            "name": self.name, "status": "online",
+            "current_task": task_desc[:100], "progress": "0%",
+            "task_type": "autonomous",
+        })
+
+        # 4. Execute via synthetic message (reuses full LLM + tool loop)
+        msg = Message(
+            sender="system",
+            content=f"[autonomous] {task_desc}",
+            source="system",
+            chat_id="autonomous",
+        )
+        self._handle_message(None, msg)
+
+        # 5. Mark complete on anchor
+        self._anchor_api("task/complete", "POST", {
+            "task_id": task_id, "result": "done via autonomous cycle",
+            "status": "done",
+        })
+        self._anchor_api("anchor", "POST", {
+            "name": self.name, "status": "online",
+            "current_task": "", "progress": "", "task_type": "",
+            "result": f"done: {task_desc[:80]}",
+        })
+        logger.info(f"[autonomous] completed task #{task_id}")
+        return True
+
     def run(self):
-        """Main loop: poll channels → handle messages → sleep."""
+        """Main loop: poll channels → handle messages → autonomous → sleep."""
         logger.info(f"Worker {self.name} entering main loop")
         while True:
+            had_messages = False
             try:
                 for channel in self.channels:
                     messages = channel.poll()
+                    if messages:
+                        had_messages = True
                     for msg in messages:
                         try:
                             self._handle_message(channel, msg)
@@ -214,7 +335,7 @@ class Worker:
             except Exception as e:
                 logger.error(f"poll error: {e}\n{traceback.format_exc()}")
 
-            # Check for pending task continuation
+            # Check for pending task continuation (always, even if had messages)
             if self._pending_task:
                 task = self._pending_task
                 self._pending_task = None
@@ -227,6 +348,13 @@ class Worker:
                     self._handle_message(None, msg)
                 except Exception as e:
                     logger.error(f"pending task error: {e}\n{traceback.format_exc()}")
+
+            # Autonomous cycle when idle (no messages, no pending task)
+            if not had_messages and not self._pending_task:
+                try:
+                    self._autonomous_cycle()
+                except Exception as e:
+                    logger.error(f"autonomous cycle error: {e}\n{traceback.format_exc()}")
 
             # Vigil patrol every 5 min
             if self._vigil_enabled and hasattr(self, 'vigil'):
