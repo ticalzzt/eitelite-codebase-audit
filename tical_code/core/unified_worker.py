@@ -302,17 +302,33 @@ class Worker:
         )
         self._handle_message(None, msg)
 
-        # 5. Mark complete on anchor
-        self._anchor_api("task/complete", "POST", {
-            "task_id": task_id, "result": "done via autonomous cycle",
-            "status": "done",
-        })
-        self._anchor_api("anchor", "POST", {
-            "name": self.name, "status": "online",
-            "current_task": "", "progress": "", "task_type": "",
-            "result": f"done: {task_desc_str}",
-        })
-        logger.info(f"[autonomous] completed task #{task_id}")
+        # 5. Check if task needs continuation (hit iteration limit or LLM said "still need to")
+        _needs_continue = bool(self._pending_task)
+        if _needs_continue:
+            # Task hit iteration limit — re-enqueue the remainder, don't mark complete
+            logger.info(f"[autonomous] task #{task_id} needs continuation, re-enqueueing")
+            self._anchor_api("task/enqueue", "POST", {
+                "target": self.name,
+                "task": f"[continue] {task_desc_str}",
+                "sender": "system",
+            })
+            self._anchor_api("anchor", "POST", {
+                "name": self.name, "status": "online",
+                "current_task": task_desc_str, "progress": f"continued",
+                "task_type": "autonomous",
+            })
+        else:
+            # Task completed normally
+            self._anchor_api("task/complete", "POST", {
+                "task_id": task_id, "result": "done via autonomous cycle",
+                "status": "done",
+            })
+            self._anchor_api("anchor", "POST", {
+                "name": self.name, "status": "online",
+                "current_task": "", "progress": "", "task_type": "",
+                "result": f"done: {task_desc_str}",
+            })
+            logger.info(f"[autonomous] completed task #{task_id}")
         return True
 
     def run(self):
@@ -488,6 +504,26 @@ All other messages enter the LLM conversation loop.
         from tical_code.core.tool_executor import get_memory_injection as _mem_inject
         _mem_text = _mem_inject()
         _sys = self.system_prompt
+        
+        # Inject brother work states into system prompt (active sharing, no LLM needed)
+        try:
+            _brother_data = self._anchor_api("anchor/work")
+            if _brother_data and isinstance(_brother_data, dict):
+                _brother_lines = ["## Sibling Work States (auto-fetched)"]
+                for _name, _info in sorted(_brother_data.items()):
+                    if _name == self.name:
+                        continue
+                    _task = _info.get("task", _info.get("status", "idle"))
+                    _prog = _info.get("progress", "")
+                    _line = f"  {_name}: {_task}"
+                    if _prog:
+                        _line += f" [{_prog}]"
+                    _brother_lines.append(_line)
+                if len(_brother_lines) > 1:
+                    _sys += "\n\n" + "\n".join(_brother_lines)
+        except Exception:
+            pass  # brother state fetch is best-effort
+        
         if _mem_text:
             _sys += "\n\n═══════════════════════════\nPERSISTENT MEMORY (loaded fresh each turn):\n" + _mem_text
         conv = [{"role": "system", "content": _sys}]
@@ -603,6 +639,17 @@ All other messages enter the LLM conversation loop.
                     # Module 4: Record action
                     verified = result.get("ok", False) or result.get("exit_code") == 0
                     self.reporter.record_action(name, args, result, verified=verified)
+                    
+                    # Auto progress reporting: every 5 iterations, update anchor (code-driven, not LLM)
+                    if iteration > 0 and iteration % 5 == 0 and msg.source == "system":
+                        try:
+                            self._anchor_api("anchor", "POST", {
+                                "name": self.name, "status": "online",
+                                "current_task": msg.content[:80] if msg.content else self.name,
+                                "progress": f"{iteration}/{max_iterations}",
+                            })
+                        except Exception:
+                            pass
                     
                     # Auto-save: save_important results as memory
                     if verified and name in ("execute_code", "web_search", "web_fetch", "memory_fts_search"):
