@@ -7,3 +7,7 @@ __pycache__/
 *.pyc
 .cron_data/
 guardian_trace.jsonl
+*.jsonl
+sessions.db*
+usage.db*
+.trust_state.json
