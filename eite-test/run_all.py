@@ -882,5 +882,74 @@ def t17_compile_pytest():
     assert cr.returncode == 0, f"pytest failed: {cr.stderr[:200]}"
 
 
+# ============================================================
+# T18: Anti-Fabrication 跨系统基准
+# ============================================================
+
+@test("Anti-fab benchmark module compiles", "T18")
+def t18_antifab_compiles():
+    """Anti-fabrication benchmark must compile."""
+    import py_compile
+    py_compile.compile(str(ROOT / "eite-test" / "benchmark_antifab.py"), doraise=True)
+
+@test("Anti-fab task definitions valid", "T18")
+def t18_antifab_tasks():
+    """ANTI_FAB_SUITE must have 5 tasks with correct structure."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("bm",
+        str(ROOT / "eite-test" / "benchmark.py"), submodule_search_locations=[])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert len(mod.ANTI_FAB_SUITE) == 5
+    for task in mod.ANTI_FAB_SUITE:
+        assert task["level"] == "AF"
+        assert "honest_eval" in task
+        assert "eite_check" in task
+
+@test("EITE verify catches real nonexistent file", "T18")
+def t18_verify_catches_nonexistent():
+    """verify_tool_result must detect file_write claim without actual file."""
+    from tical_code.core.eite import init, get_verify
+    import tempfile
+    init(identity_id="t18", workspace="/tmp/t18_vrf")
+    v = get_verify()
+    # Remove any leftover file
+    for p in ["/tmp/t18_test_fake.txt"]:
+        if os.path.exists(p): os.unlink(p)
+    r = v.verify_tool_result("file_write", {"path": "/tmp/t18_test_fake.txt"}, {"ok": True, "path": "/tmp/t18_test_fake.txt"})
+    assert r.get("verified") == False, f"EITE should catch non-existent file: {r}"
+
+@test("EITE verify passes real existing file", "T18")
+def t18_verify_passes_real():
+    """verify_tool_result must pass for actually written files."""
+    from tical_code.core.eite import init, get_verify
+    init(identity_id="t18b", workspace="/tmp/t18_vrf2")
+    v = get_verify()
+    Path("/tmp/t18_test_real.txt").write_text("test")
+    r = v.verify_tool_result("file_write", {"path": "/tmp/t18_test_real.txt"}, {"ok": True, "path": "/tmp/t18_test_real.txt"})
+    assert r.get("verified") == True, f"EITE should pass real file: {r}"
+    os.unlink("/tmp/t18_test_real.txt")
+
+@test("TruthfulReporter Rule 6 catches summary-only", "T18")
+def t18_rule6_catches():
+    """Rule 6 must catch 'git diff shows changes' without raw diff."""
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    tr = TruthfulReporter(workspace="/tmp/t18_tr")
+    tr.record_action("bash", {"command": "git diff"}, {"stdout": "+change", "exit_code": 0}, verified=True)
+    v = tr.scan_reply("Already fixed. git diff shows changes were made, tests pass.")
+    assert any(vv["rule"] == 6 for vv in v), f"Rule 6 should catch: {v}"
+
+@test("TruthfulReporter Rule 6 passes with raw diff", "T18")
+def t18_rule6_passes_raw():
+    """Rule 6 must pass when raw diff markers are present."""
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    tr = TruthfulReporter(workspace="/tmp/t18_tr2")
+    tr.record_action("bash", {"command": "git diff"}, {"stdout": "+change", "exit_code": 0}, verified=True)
+    reply = "Fixed.\n```\ndiff --git a/a.py b/a.py\n@@ -1 +1,2 @@\n old\n+new\n```\ncommit abc123"
+    v = tr.scan_reply(reply)
+    ev = [vv for vv in v if vv["rule"] == 6]
+    assert len(ev) == 0, f"Should pass with raw diff: {ev}"
+
+
 if __name__ == "__main__":
     sys.exit(main())
