@@ -25,6 +25,9 @@ def init(identity_id: str = None, workspace: str = "") -> bool:
     """Initialize EITE engine. Creates VerifyLayer singleton."""
     global _verify, _identity_id
     if _verify is not None:
+        if identity_id and identity_id != _identity_id:
+            _identity_id = identity_id
+            _verify = VerifyLayer(name=identity_id, workspace=workspace or ".")
         return True
 
     from .config import get as cfg_get, set as cfg_set, save as cfg_save
