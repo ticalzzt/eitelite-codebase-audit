@@ -775,5 +775,112 @@ def t15_benchmark_report():
     print(f" (report: {report_path})", end="")
 
 
+# ============================================================
+# T16: Cross-System Benchmark Infrastructure
+# ============================================================
+
+@test("Benchmark module compiles and has tasks", "T16")
+def t16_benchmark_compile():
+    """The benchmark.py module must compile cleanly."""
+    import py_compile
+    py_compile.compile(str(ROOT / "eite-test" / "benchmark.py"), doraise=True)
+
+@test("Benchmark task definitions valid", "T16")
+def t16_task_defs():
+    """All tasks must have valid structure."""
+    import py_compile
+    # Read and parse the benchmark module manually
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("benchmark",
+        str(ROOT / "eite-test" / "benchmark.py"),
+        submodule_search_locations=[]
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    tasks = mod.TASK_SUITE
+    assert len(tasks) >= 10, f"Expected 10+ tasks, got {len(tasks)}"
+    levels = set(t["level"] for t in tasks)
+    assert "L0" in levels and "L1" in levels and "L2" in levels and "L3" in levels
+    assert mod.MODEL_PRICING["deepseek-chat"]["input"] > 0
+    for task in tasks:
+        eval_cmd = task["eval"]
+        assert isinstance(eval_cmd, str) and len(eval_cmd) > 10, f"{task['id']}: eval too short"
+
+@test("Benchmark report aggregation", "T16")
+def t16_report_aggregation():
+    """Benchmark aggregated report must have correct schema."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("benchmark",
+        str(ROOT / "eite-test" / "benchmark.py"),
+        submodule_search_locations=[]
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    r1 = mod.RunResult(task_id="test", level="L0", system="eitelite", run=1, success=True, steps=2, cost_usd=0.001)
+    results = [r1]
+    reports = mod.aggregate_results(results)
+    assert "eitelite" in reports
+    assert reports["eitelite"].global_summary["success_rate_mean"] == 1.0
+    assert reports["eitelite"].global_summary["total_cost"] == 0.001
+
+@test("Failure taxonomy covers all categories", "T16")
+def t16_failure_taxonomy():
+    """Failure classification must cover all 5 categories."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("benchmark",
+        str(ROOT / "eite-test" / "benchmark.py"),
+        submodule_search_locations=[]
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert len(mod.FAILURE_CATEGORIES) == 6
+    assert "fake_completion" in mod.FAILURE_CATEGORIES
+    assert "infinite_loop" in mod.FAILURE_CATEGORIES
+    patterns = mod.analyze_failure_patterns([])
+    assert isinstance(patterns, dict)
+
+
+# ============================================================
+# T17: Compile Verification Layer
+# ============================================================
+
+@test("Compile: python -c import after file_write", "T17")
+def t17_compile_import():
+    """After writing a .py file, verify it imports."""
+    from tical_code.core.tool_executor import execute
+    test_code = "x = 42\ndef f(n): return n * 2\n"
+    r = execute("file_write", {"path": "/tmp/t17_import_test.py", "content": test_code})
+    cr = subprocess.run(
+        [sys.executable, "-c", "import sys; sys.path.insert(0, '/tmp'); import t17_import_test; assert t17_import_test.f(21) == 42"],
+        capture_output=True, text=True, timeout=10
+    )
+    assert cr.returncode == 0, f"Import failed: {cr.stderr}"
+
+@test("Compile: py_compile validation", "T17")
+def t17_py_compile():
+    """Generated Python files must pass py_compile."""
+    import py_compile
+    py_compile.compile("/tmp/t17_import_test.py", doraise=True)
+
+@test("Compile: pytest after test generation", "T17")
+def t17_compile_pytest():
+    """After writing pytest tests, verify they run."""
+    from tical_code.core.tool_executor import execute
+    os.makedirs("/tmp/t17_pytest", exist_ok=True)
+    module_code = "def add(a, b): return a + b\ndef mul(a, b): return a * b\n"
+    test_code = (
+        "from t17_module import add, mul\n"
+        "def test_add(): assert add(2,3) == 5\n"
+        "def test_mul(): assert mul(3,4) == 12\n"
+    )
+    execute("file_write", {"path": "/tmp/t17_pytest/t17_module.py", "content": module_code})
+    execute("file_write", {"path": "/tmp/t17_pytest/test_t17_module.py", "content": test_code})
+    cr = subprocess.run(
+        [sys.executable, "-m", "pytest", "/tmp/t17_pytest/test_t17_module.py", "-v", "--tb=short"],
+        capture_output=True, text=True, timeout=15
+    )
+    assert cr.returncode == 0, f"pytest failed: {cr.stderr[:200]}"
+
+
 if __name__ == "__main__":
     sys.exit(main())
