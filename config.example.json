@@ -1,12 +1,12 @@
 {
-    "name": "test",
-    "workspace": "/home/ubuntu/workspace",
+    "name": "my-agent",
+    "workspace": "/home/user/workspace",
     "ai_model": "deepseek-chat",
-    "ai_key": "sk-YOUR_KEY_HERE",
+    "ai_key": "sk-YOUR_API_KEY_HERE",
     "ai_endpoint": "https://api.deepseek.com/v1",
-    "chat_url": "http://REPLACED_TAIWAN_IP:8080",
-    "chat_key": "REPLACED_SHARED_KEY",
-    "tg_token": "",
+    "chat_url": "http://YOUR_SERVER_IP:8080",
+    "chat_key": "YOUR_SHARED_KEY",
+    "tg_token": "YOUR_TELEGRAM_BOT_TOKEN",
     "cdp_url": "http://127.0.0.1:9222",
     "cdp_headless": true,
     "cdp_proxy": ""

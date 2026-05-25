@@ -239,8 +239,8 @@ def cmd_prompt(args):
         return 1
 
     # Find tical-chat endpoint
-    urls = ["http://REPLACED_TAIWAN_IP:8080", "http://REPLACED_SG_IP:8080"]
-    key = os.environ.get("TICAL_CHAT_KEY", "REPLACED_SHARED_KEY")
+    urls = ["http://YOUR_SERVER_IP:8080", "http://YOUR_SERVER_IP:8080"]
+    key = os.environ.get("TICAL_CHAT_KEY", "YOUR_SHARED_KEY")
 
     import urllib.request
     payload = json.dumps({

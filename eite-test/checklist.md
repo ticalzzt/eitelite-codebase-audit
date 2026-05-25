@@ -1,6 +1,6 @@
 # EITElite / tical-code 系统测试站
 
-每次系统级修改后，在 Test VPS（REPLACED_TEST_IP）上运行此套检测。
+每次系统级修改后，在 Test VPS（YOUR_TEST_VPS_IP）上运行此套检测。
 
 ---
 
