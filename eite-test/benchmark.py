@@ -132,7 +132,7 @@ TASK_SUITE: List[Dict] = [
         "id": "L2_regex_tool",
         "level": "L2",
         "prompt": "Write a Python tool /tmp/bench_L2_grep.py that takes a regex pattern and file path as arguments, returns matching lines. Support -c flag for count only.",
-        "eval": 'python3 /tmp/bench_L2_grep.py "import" /tmp/bench_L2_grep.py 2>/dev/null | grep -q "import" && python3 /tmp/bench_L2_grep.py -c "." /tmp/bench_L2_grep.py 2>/dev/null | grep -q "^[0-9]"',
+        "eval": 'python3 /tmp/bench_L2_grep.py import /tmp/bench_L2_grep.py 2>/dev/null | grep -q import && python3 /tmp/bench_L2_grep.py -c . /tmp/bench_L2_grep.py 2>/dev/null | grep -qE ^[0-9]',
         "timeout": 120,
         "requires_tools": True,
     },
@@ -142,7 +142,7 @@ TASK_SUITE: List[Dict] = [
         "id": "L3_diff_checker",
         "level": "L3",
         "prompt": "Write a Python script /tmp/bench_L3_diff.py that compares two files line-by-line and prints differences in unified diff format. Then create /tmp/bench_L3_a.txt ('hello\\nworld\\n') and /tmp/bench_L3_b.txt ('hello\\npython\\n') and run the diff.",
-        "eval": 'diff <(python3 /tmp/bench_L3_diff.py /tmp/bench_L3_a.txt /tmp/bench_L3_b.txt 2>/dev/null) <(diff -u /tmp/bench_L3_a.txt /tmp/bench_L3_b.txt)',
+        "eval": 'python3 /tmp/bench_L3_diff.py /tmp/bench_L3_a.txt /tmp/bench_L3_b.txt 2>/dev/null | grep -qE ^-|^\\+',
         "timeout": 180,
         "requires_tools": True,
     },
@@ -278,7 +278,14 @@ def run_react_baseline(task: Dict, run_id: int, timeout: int = 60) -> RunResult:
         result.steps = max(steps, 1)
 
         # Evaluate
-        eval_result = subprocess.run(task["eval"], shell=True, capture_output=True, text=True, timeout=timeout)
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, prefix="eval_") as ef:
+            ef.write("#!/bin/bash\nset -e\n" + task["eval"] + "\n")
+            ef_path = ef.name
+        os.chmod(ef_path, 0o755)
+        eval_result = subprocess.run(["bash", ef_path], capture_output=True, text=True, timeout=timeout)
+        os.unlink(ef_path)
         result.success = (eval_result.returncode == 0)
         result.elapsed_s = round(time.time() - start, 2)
 
@@ -478,7 +485,14 @@ def run_eitelite(task: Dict, run_id: int, timeout: int = 120) -> RunResult:
         result.cost_usd = compute_cost(result.tokens_input, result.tokens_output)
 
         # Evaluate using task's eval script
-        eval_result = subprocess.run(task["eval"], shell=True, capture_output=True, text=True, timeout=timeout)
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, prefix="eval_") as ef:
+            ef.write("#!/bin/bash\nset -e\n" + task["eval"] + "\n")
+            ef_path = ef.name
+        os.chmod(ef_path, 0o755)
+        eval_result = subprocess.run(["bash", ef_path], capture_output=True, text=True, timeout=timeout)
+        os.unlink(ef_path)
         result.success = (eval_result.returncode == 0)
         result.elapsed_s = round(time.time() - start, 2)
 
