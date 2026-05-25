@@ -1,0 +1,171 @@
+{
+  "hermes": {
+    "agent": "hermes",
+    "runs_per_task": 3,
+    "timestamp": 1779677263.666307,
+    "task_totals": [
+      {
+        "task_id": "L0_bash_pipe",
+        "level": "L0",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.01,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L0_file_write",
+        "level": "L0",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.01,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L0_list_files",
+        "level": "L0",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.01,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L1_csv_parse",
+        "level": "L1",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 2.0,
+        "steps_std": 0.0,
+        "time_mean": 0.04,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L1_fibonacci",
+        "level": "L1",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.04,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L1_palindrome",
+        "level": "L1",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.03,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L2_mini_web",
+        "level": "L2",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 2.0,
+        "steps_std": 0.0,
+        "time_mean": 0.04,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L2_regex_tool",
+        "level": "L2",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.1,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L2_sort_algo",
+        "level": "L2",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.04,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L3_build_test",
+        "level": "L3",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 3.0,
+        "steps_std": 0.0,
+        "time_mean": 0.0,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L3_diff_checker",
+        "level": "L3",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 3.0,
+        "steps_std": 0.0,
+        "time_mean": 0.08,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      },
+      {
+        "task_id": "L3_json_api",
+        "level": "L3",
+        "runs": 3,
+        "success": 3,
+        "success_rate": 1.0,
+        "steps_mean": 1.0,
+        "steps_std": 0.0,
+        "time_mean": 0.04,
+        "time_std": 0.0,
+        "cost_mean": 0.0,
+        "cost_std": 0.0
+      }
+    ],
+    "global_summary": {
+      "tasks_total": 12,
+      "runs_total": 36,
+      "success_rate_mean": 1.0,
+      "total_cost": 0.0
+    }
+  }
+}
