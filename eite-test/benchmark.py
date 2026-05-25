@@ -376,7 +376,7 @@ def _generate_code_for_task(task: Dict, target_dir: str) -> int:
         steps += 1
 
     elif task_id == "L2_mini_web":
-        app_code = textwrap.dedent("""\\
+        app_code = textwrap.dedent("""\
         from flask import Flask
         app = Flask(__name__)
         @app.route('/')
@@ -386,7 +386,7 @@ def _generate_code_for_task(task: Dict, target_dir: str) -> int:
             app.run()
         """)
         execute("file_write", {"path": "/tmp/bench_L2_app.py", "content": app_code})
-        test_code = textwrap.dedent("""\\
+        test_code = textwrap.dedent("""\
         import requests
         def test_hello():
             r = requests.get('http://localhost:5000/')
@@ -396,7 +396,7 @@ def _generate_code_for_task(task: Dict, target_dir: str) -> int:
         steps += 2
 
     elif task_id == "L2_regex_tool":
-        code = textwrap.dedent("""\\
+        code = textwrap.dedent("""\
         #!/usr/bin/env python3
         import sys, re
         pattern = sys.argv[1]
