@@ -217,6 +217,18 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "restart_self",
+            "description": "Restart this worker process. Sends SIGTERM — systemd auto-restarts cleanly. Use to clear long-running context, resolve memory pressure, or after model/config changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
 ]
 
 
@@ -368,6 +380,14 @@ def exec_state_save(args: dict, base_dir: str = "") -> dict:
     return {"ok": True, "key": key}
 
 
+def exec_restart_self(args: dict = None) -> dict:
+    """Restart this worker process. Sends SIGTERM — systemd auto-restarts."""
+    import signal, os
+    logger.warning("[executor] restart_self called — sending SIGTERM to self")
+    os.kill(os.getpid(), signal.SIGTERM)
+    return {"ok": True, "msg": "SIGTERM sent, systemd will restart"}
+
+
 # ============ 分发器 ============
 
 def execute(name: str, args: dict, base_dir: str = "") -> dict:
@@ -391,6 +411,7 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "state_save": lambda a: exec_state_save(a, base_dir),
         # conv_search removed
         "chat_send": exec_chat_send,
+        "restart_self": exec_restart_self,
     }
     handler = dispatch.get(name)
     if not handler:
