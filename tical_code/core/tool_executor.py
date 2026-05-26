@@ -190,20 +190,6 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "description": "Full-text search conversation history. Supports Chinese and English.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "top_k": {"type": "integer", "description": "Number of results", "default": 5}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "state_save",
             "description": "Save persistent state (non-memory key-value data).",
             "parameters": {
