@@ -1,4 +1,20 @@
-"""Cron scheduler - periodic task execution."""
+"""
+Cron Scheduler — Autonomous Heartbeat System
+=============================================
+
+Enables the AI to set and execute scheduled tasks without user input.
+The AI can "wake up" on its own to perform periodic duties.
+
+Features:
+- Simple schedule expressions: "every 1h", "at 09:00", "every 30m"
+- JSON persistence for tasks and execution logs
+- Rate limiting: max 100 executions/day
+- Per-task timeout: 60 seconds
+- Safety: no exec/eval/system commands in task descriptions
+
+Author: Tical (子泽图)
+Version: see tical_code.__version__
+"""
 
 import json
 import logging
@@ -13,14 +29,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+
 # =============================================================================
 # Constants
 # =============================================================================
 
-MAX_DAILY_EXECUTIONS = 100     # Exec
-MAX_RETRIES = 3                # Retry
+MAX_DAILY_EXECUTIONS = 100     # 每天最多执行次数
+MAX_RETRIES = 3                # 最大重试次数
 
-# (action)
+# 危险命令模式（禁止在action中出现）
 _DANGEROUS_PATTERNS = [
     r'\bexec\s*\(',
     r'\beval\s*\(',
@@ -32,6 +49,7 @@ _DANGEROUS_PATTERNS = [
     r'\bchmod\s+777\b',
     r'\bdd\s+if=',
 ]
+
 
 # =============================================================================
 # Data Classes
@@ -103,6 +121,7 @@ class CronTask:
             fail_count=data.get('fail_count', 0),
         )
 
+
 @dataclass
 class CronLogEntry:
     """A log entry for a cron task execution.
@@ -133,6 +152,7 @@ class CronLogEntry:
             'duration_ms': self.duration_ms,
         }
 
+
 # =============================================================================
 # Schedule Parser
 # =============================================================================
@@ -146,13 +166,13 @@ class ScheduleParser:
     - "every 30s" → interval in seconds
     """
 
-    # Format: "every <number><unit>"
+    # 间隔格式: "every <number><unit>"
     _INTERVAL_RE = re.compile(
         r'^every\s+(\d+)\s*(s|m|h|d)$',
         re.IGNORECASE,
     )
 
-    # Format: "at HH:MM"
+    # 定时格式: "at HH:MM"
     _AT_TIME_RE = re.compile(
         r'^at\s+(\d{1,2}):(\d{2})$',
         re.IGNORECASE,
@@ -175,7 +195,7 @@ class ScheduleParser:
         """
         schedule = schedule.strip()
 
-        # Format
+        # 尝试匹配间隔格式
         interval_match = cls._INTERVAL_RE.match(schedule)
         if interval_match:
             count = int(interval_match.group(1))
@@ -183,20 +203,20 @@ class ScheduleParser:
             multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
             seconds = count * multipliers[unit]
             if seconds <= 0:
-                raise ValueError(f"0: {schedule}")
+                raise ValueError(f"间隔必须大于0: {schedule}")
             return ("interval", seconds)
 
-        # Format
+        # 尝试匹配定时格式
         at_match = cls._AT_TIME_RE.match(schedule)
         if at_match:
             hour = int(at_match.group(1))
             minute = int(at_match.group(2))
             if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-                raise ValueError(f": {hour:02d}:{minute:02d}")
+                raise ValueError(f"无效时间: {hour:02d}:{minute:02d}")
             seconds_since_midnight = hour * 3600 + minute * 60
             return ("at_time", seconds_since_midnight)
 
-        raise ValueError(f": {schedule}")
+        raise ValueError(f"无法解析计划表达式: {schedule}")
 
     @classmethod
     def calculate_next_run(cls, schedule: str, from_time: Optional[float] = None) -> float:
@@ -215,24 +235,24 @@ class ScheduleParser:
         if schedule_type == "interval":
             return now + value
         elif schedule_type == "at_time":
-            # Compute/TargetTime
+            # 计算今天/明天的目标时间
             dt_now = datetime.fromtimestamp(now)
             target_seconds = value
             today_seconds = dt_now.hour * 3600 + dt_now.minute * 60 + dt_now.second
 
-            # target datetime
+            # 构建今天的target datetime
             target_hour = value // 3600
             target_minute = (value % 3600) // 60
             target_dt = dt_now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
 
             if target_dt.timestamp() <= now:
-                # Time,
+                # 已经过了今天的时间，安排到明天
                 from datetime import timedelta
                 target_dt += timedelta(days=1)
 
             return target_dt.timestamp()
 
-        return now + 60  # 1
+        return now + 60  # 默认1分钟
 
     @classmethod
     def is_valid(cls, schedule: str) -> bool:
@@ -250,36 +270,48 @@ class ScheduleParser:
         except ValueError:
             return False
 
+
 # =============================================================================
 # CronScheduler
 # =============================================================================
 
 class CronScheduler:
-    """ """
+    """Autonomous Heartbeat — AI自己设定和执行定时任务.
+
+    让AI能在没有用户输入的情况下自己醒来做事。
+
+    Usage:
+        scheduler = CronScheduler(data_dir="/path/to/data")
+        task = scheduler.add_task("每日总结", "every 1h", "总结最近的工作进展", "llm_chat")
+        scheduler.tick()  # 心跳检查
+    """
 
     def __init__(self, data_dir: str):
-        """ """
+        """
+        Args:
+            data_dir: 数据存储目录（存放cron_tasks.json和cron_log.jsonl）
+        """
         self.data_dir = os.path.expanduser(data_dir)
         os.makedirs(self.data_dir, exist_ok=True)
 
-        # andLogFilePath
+        # 任务和日志文件路径
         self._tasks_file = os.path.join(self.data_dir, 'cron_tasks.json')
         self._log_file = os.path.join(self.data_dir, 'cron_log.jsonl')
 
-        # Memory
+        # 内存中的任务
         self._tasks: Dict[str, CronTask] = {}
 
-        # ExecLog
+        # 执行日志
         self._log: List[CronLogEntry] = []
 
-        # Exec
+        # 今日执行计数
         self._daily_exec_count = 0
         self._daily_exec_date = datetime.now().strftime('%Y-%m-%d')
 
-        # Exec(System)
+        # 外部执行器（由系统注入）
         self._executor: Optional[Callable] = None
 
-        # Load
+        # 启动时加载
         self._load_tasks()
         self._load_log()
 
@@ -316,16 +348,16 @@ class CronScheduler:
         Raises:
             ValueError: If schedule is invalid or action contains dangerous patterns
         """
-        # Verifyschedule
+        # 验证schedule
         if not ScheduleParser.is_valid(schedule):
-            raise ValueError(f": {schedule}")
+            raise ValueError(f"无效的计划表达式: {schedule}")
 
-        # Check:
+        # 安全检查：禁止危险命令
         self._validate_action(action)
 
         task_id = str(uuid.uuid4())[:8]
 
-        # ComputeExecTime
+        # 计算下次执行时间
         next_run = ScheduleParser.calculate_next_run(schedule)
 
         task = CronTask(
@@ -342,8 +374,8 @@ class CronScheduler:
         self._save_tasks()
 
         logger.info(
-            f"[CronScheduler] : {name} ({schedule}) "
-            f": {datetime.fromtimestamp(next_run).strftime('%Y-%m-%d %H:%M')}"
+            f"[CronScheduler] 添加任务: {name} ({schedule}) "
+            f"下次执行: {datetime.fromtimestamp(next_run).strftime('%Y-%m-%d %H:%M')}"
         )
         return task
 
@@ -357,12 +389,12 @@ class CronScheduler:
             True if task was removed, False if not found
         """
         if task_id not in self._tasks:
-            logger.warning(f"[CronScheduler] : {task_id}")
+            logger.warning(f"[CronScheduler] 任务不存在: {task_id}")
             return False
 
         task = self._tasks.pop(task_id)
         self._save_tasks()
-        logger.info(f"[CronScheduler] : {task.name} ({task_id})")
+        logger.info(f"[CronScheduler] 删除任务: {task.name} ({task_id})")
         return True
 
     def reschedule(self, task_id: str, new_schedule: str) -> bool:
@@ -379,7 +411,7 @@ class CronScheduler:
             return False
 
         if not ScheduleParser.is_valid(new_schedule):
-            raise ValueError(f": {new_schedule}")
+            raise ValueError(f"无效的计划表达式: {new_schedule}")
 
         task = self._tasks[task_id]
         task.schedule = new_schedule
@@ -387,7 +419,7 @@ class CronScheduler:
 
         self._save_tasks()
         logger.info(
-            f"[CronScheduler] : {task.name} → {new_schedule}"
+            f"[CronScheduler] 重计划任务: {task.name} → {new_schedule}"
         )
         return True
 
@@ -458,19 +490,25 @@ class CronScheduler:
     # =========================================================================
 
     def tick(self) -> List[Dict[str, Any]]:
-        """ """
+        """Heartbeat check — execute any tasks that are due.
+
+        由外部循环定期调用，检查是否有到期的任务需要执行。
+
+        Returns:
+            List of execution results
+        """
         results = []
         now = time.time()
 
-        # CheckDate
+        # 检查日期重置
         today = datetime.now().strftime('%Y-%m-%d')
         if today != self._daily_exec_date:
             self._daily_exec_count = 0
             self._daily_exec_date = today
 
-        # Check
+        # 检查每日限制
         if self._daily_exec_count >= MAX_DAILY_EXECUTIONS:
-            logger.warning("[CronScheduler] ")
+            logger.warning("[CronScheduler] 今日执行次数已达上限")
             return results
 
         for task in list(self._tasks.values()):
@@ -480,7 +518,7 @@ class CronScheduler:
                 result = self.execute_task(task)
                 results.append(result)
 
-                # Check
+                # 检查每日限制
                 if self._daily_exec_count >= MAX_DAILY_EXECUTIONS:
                     break
 
@@ -499,7 +537,7 @@ class CronScheduler:
         success = False
         result_text = ''
 
-        # Check
+        # 检查每日限制
         today = datetime.now().strftime('%Y-%m-%d')
         if today != self._daily_exec_date:
             self._daily_exec_count = 0
@@ -510,35 +548,35 @@ class CronScheduler:
                 'task_id': task.id,
                 'task_name': task.name,
                 'success': False,
-                'result': '',
+                'result': '今日执行次数已达上限',
                 'duration_ms': 0,
             }
 
         try:
-            # Execor
+            # 使用外部执行器或简单返回
             if self._executor:
                 result_text = self._executor(task)
             else:
-                result_text = f"[] {task.action}"
+                result_text = f"[已执行] {task.action}"
 
             success = True
             task.run_count += 1
-            task.fail_count = 0  # Fail
+            task.fail_count = 0  # 重置连续失败计数
 
         except Exception as e:
             success = False
             result_text = str(e)
             task.fail_count += 1
             logger.error(
-                f"[CronScheduler] : {task.name} "
+                f"[CronScheduler] 任务执行失败: {task.name} "
                 f"({task.fail_count}/{task.max_retries}): {e}"
             )
 
-            # Fail,
+            # 连续失败超过上限，自动禁用
             if task.fail_count >= task.max_retries:
                 task.enabled = False
                 logger.warning(
-                    f"[CronScheduler]  {task.name}  {task.fail_count} ,"
+                    f"[CronScheduler] 任务 {task.name} 连续失败 {task.fail_count} 次，已自动禁用"
                 )
 
         finally:
@@ -547,12 +585,12 @@ class CronScheduler:
             task.next_run = ScheduleParser.calculate_next_run(task.schedule)
             self._daily_exec_count += 1
 
-        # Log
+        # 记录日志
         log_entry = CronLogEntry(
             task_id=task.id,
             task_name=task.name,
             success=success,
-            result=result_text[:500],  # 
+            result=result_text[:500],  # 截断
             duration_ms=elapsed_ms,
         )
         self._log.append(log_entry)
@@ -585,12 +623,12 @@ class CronScheduler:
                     task = CronTask.from_dict(task_data)
                     self._tasks[task.id] = task
                 except (KeyError, TypeError) as e:
-                    logger.warning(f"[CronScheduler] : {e}")
+                    logger.warning(f"[CronScheduler] 加载任务失败: {e}")
 
-            logger.info(f"[CronScheduler]  {len(self._tasks)} ")
+            logger.info(f"[CronScheduler] 已加载 {len(self._tasks)} 个任务")
 
         except (json.JSONDecodeError, OSError) as e:
-            logger.error(f"[CronScheduler] : {e}")
+            logger.error(f"[CronScheduler] 加载任务文件失败: {e}")
 
     def _save_tasks(self) -> None:
         """Save tasks to JSON file."""
@@ -599,7 +637,7 @@ class CronScheduler:
             with open(self._tasks_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except OSError as e:
-            logger.error(f"[CronScheduler] : {e}")
+            logger.error(f"[CronScheduler] 保存任务文件失败: {e}")
 
     def _load_log(self) -> None:
         """Load execution logs from JSONL file."""
@@ -626,10 +664,10 @@ class CronScheduler:
                     except json.JSONDecodeError:
                         continue
 
-            logger.info(f"[CronScheduler]  {len(self._log)} ")
+            logger.info(f"[CronScheduler] 已加载 {len(self._log)} 条日志")
 
         except OSError as e:
-            logger.error(f"[CronScheduler] : {e}")
+            logger.error(f"[CronScheduler] 加载日志文件失败: {e}")
 
     def _append_log(self, entry: CronLogEntry) -> None:
         """Append a log entry to the JSONL file.
@@ -641,33 +679,44 @@ class CronScheduler:
             with open(self._log_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + '\n')
         except OSError as e:
-            logger.error(f"[CronScheduler] : {e}")
+            logger.error(f"[CronScheduler] 追加日志失败: {e}")
 
     # =========================================================================
     # Safety
     # =========================================================================
 
     def _validate_action(self, action: str) -> None:
-        """ """
-        # :(Path)
+        """Validate that an action description doesn't contain dangerous patterns.
+
+        两层验证：
+        1. 正则黑名单（快速过滤明显危险模式）
+        2. 字符白名单（只允许安全字符，从根本上防绕过）
+
+        Args:
+            action: Action description text
+
+        Raises:
+            ValueError: If dangerous pattern detected
+        """
+        # 第一层：正则黑名单（快速路径）
         for pattern in _DANGEROUS_PATTERNS:
             if re.search(pattern, action, re.IGNORECASE):
                 raise ValueError(
-                    f": {pattern}."
-                    f" exec/eval/ ."
+                    f"任务描述包含危险模式: {pattern}。"
+                    f"不允许 exec/eval/系统命令 等操作。"
                 )
 
-        # :()
-        # cron action is,Allow:
-        # ,,,,
+        # 第二层：字符白名单（根本防绕过）
+        # cron action 应该是自然语言描述，只允许：
+        # 中英文、数字、空格、标点、基本符号
         _allowed_chars = re.compile(
             r'^[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef'
             r'\.\,\;\:\!\?\-\+\=\(\)\[\]\/\@\#\%\&\*\~]+$'
         )
         if not _allowed_chars.match(action):
             raise ValueError(
-                "."
-                ",,,."
+                "任务描述包含不允许的字符。"
+                "只允许中文、英文、数字、常见标点。"
             )
 
     # =========================================================================
