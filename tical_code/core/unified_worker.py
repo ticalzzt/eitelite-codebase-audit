@@ -71,6 +71,8 @@ class Worker:
             api_key=cfg.get("ai_key", ""),
             base_url=cfg.get("ai_endpoint", "https://api.deepseek.com/v1"),
         )
+        # Fallback model: used when primary model fails (API error / timeout / rate limit)
+        self.fallback_model = cfg.get("fallback_model", "deepseek-v4-flash")
 
         # Expose LLM to tool_executor for switch_model
         from tical_code.core import tool_executor as _te
@@ -559,22 +561,37 @@ All other messages enter the LLM conversation loop.
             try:
                 response = self.llm.chat(conv, tools=TOOL_SCHEMAS_CLEAN)
             except Exception as e:
-                import traceback as _tb
-                _tb.print_exc()
                 error_str = str(e)
-                self._task_errored = True
-                hint = ""
-                if "401" in error_str or "402" in error_str or "403" in error_str:
-                    hint = " API key error — use switch_model to set a valid key."
-                elif "400" in error_str:
-                    hint = " Model may be unavailable — use list_models + switch_model to change."
-                elif "429" in error_str or "rate" in error_str.lower():
-                    hint = " Rate limited — retry or switch_model to a different model."
-                elif "timeout" in error_str.lower() or "timed out" in error_str.lower():
-                    hint = " API timed out — retry or switch_model to a faster model."
-                from tical_code.core.llm_interface import ChatResponse
-                response = ChatResponse(content=f"[API error: {error_str[:80]}.{hint}]")
                 logger.warning(f"  LLM call failed: {error_str[:100]}")
+                # Retry with fallback model if primary model failed
+                _fell_back = False
+                if hasattr(self, 'fallback_model') and self.fallback_model and self.llm._model != self.fallback_model:
+                    logger.warning(f"  Retrying with fallback model: {self.fallback_model}")
+                    old_model = self.llm._model
+                    self.llm.set_model(self.fallback_model)
+                    try:
+                        response = self.llm.chat(conv, tools=TOOL_SCHEMAS_CLEAN)
+                        _fell_back = True
+                        logger.warning(f"  Fallback succeeded: {self.fallback_model}")
+                    except Exception as e2:
+                        logger.warning(f"  Fallback also failed: {e2}")
+                        self.llm.set_model(old_model)
+                if not _fell_back:
+                    import traceback as _tb
+                    _tb.print_exc()
+                    self._task_errored = True
+                    hint = ""
+                    if "401" in error_str or "402" in error_str or "403" in error_str:
+                        hint = " API key error — use switch_model to set a valid key."
+                    elif "400" in error_str:
+                        hint = " Model may be unavailable — use list_models + switch_model to change."
+                    elif "429" in error_str or "rate" in error_str.lower():
+                        hint = " Rate limited — retry or switch_model to a different model."
+                    elif "timeout" in error_str.lower() or "timed out" in error_str.lower():
+                        hint = " API timed out — retry or switch_model to a faster model."
+                    from tical_code.core.llm_interface import ChatResponse
+                    response = ChatResponse(content=f"[API error: {error_str[:80]}.{hint}]")
+                    logger.warning(f"  LLM call failed (no fallback): {error_str[:100]}")
             content = response.content
             tool_calls = response.tool_calls
 
