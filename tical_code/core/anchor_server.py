@@ -155,21 +155,27 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 })
             return self._send_json({"ok": True, "task_id": task_id})
         
-        # /task/dequeue → 出队
+        # /task/dequeue → 出队 (标记为 running, 不移除)
         if path == "/task/dequeue":
             worker = body.get("worker", "")
             with task_lock:
-                for i, t in enumerate(task_queue):
+                for t in task_queue:
                     if t["status"] == "pending" and (not t["target"] or t["target"] == worker):
                         t["status"] = "running"
                         t["worker"] = worker
                         t["started_at"] = time.time()
-                        task_queue.pop(i)
                         return self._send_json({"ok": True, "task": t})
             return self._send_json({"ok": True, "task": None})
         
-        # /task/complete → 完成
+        # /task/complete → 标记为 done (不移除)
         if path == "/task/complete":
+            task_id = body.get("task_id", "")
+            with task_lock:
+                for t in task_queue:
+                    if t["id"] == task_id:
+                        t["status"] = "done"
+                        t["completed_at"] = time.time()
+                        break
             return self._send_json({"ok": True})
         
         self._send_json({"error": "not_found"}, 404)
