@@ -99,6 +99,13 @@ class EiteVerifyEngine:
 
         return {"verified": True, "verify_detail": "ok"}
 
+    def check_identity(self, prompt: str = "") -> bool:
+        """Check if the prompt correctly identifies this worker by name.
+        Returns True if identity matches or prompt is empty."""
+        if not prompt:
+            return True
+        return self._identity_id in prompt
+
     def scan_reply(self, reply: str) -> list[str]:
         """扫描回复中的可疑内容。返回警告列表。"""
         if not reply:
