@@ -85,6 +85,27 @@ _TEST_CMD_RE = re.compile(
     re.I,
 )
 
+# ---------------------------------------------------------------------------
+# Rule 7: Completion-without-evidence patterns
+# ---------------------------------------------------------------------------
+
+# "Done"/"complete"/"finished" claims — broader than verb-map claims
+_COMPLETION_CLAIM_EN_RE = re.compile(
+    r"\b(done|completed?|finished|resolved|accomplished|已[做完修好改]|完成|修复|修正)\b",
+    re.I,
+)
+# Evidence verification tools: the three required evidence types
+_VERIFICATION_TOOLS = re.compile(
+    r"\b(git diff|git log|pytest|python -m pytest|unittest|run_all)\b",
+    re.I,
+)
+# Evidence keywords in reply — claims about evidence without showing it
+_EVIDENCE_CLAIM_WORDS = re.compile(
+    r"\b(git diff (?:shows|indicates?|confirmed|verified|output|result)|"
+    r"test(?:s)? (?:pass|fail|ran|run|ok|all green|all passed))\b",
+    re.I,
+)
+
 # Trust window: only count violations from the last 24 hours
 _TRUST_WINDOW_SECONDS = 86400
 
@@ -237,6 +258,68 @@ class TruthfulReporter:
 
         return violations
 
+    def _check_completion_evidence(self, reply_text: str) -> list[dict]:
+        """Rule 7: if reply claims completion without verification evidence."""
+        violations: list[dict] = []
+
+        # Only trigger when completion is claimed
+        if not _COMPLETION_CLAIM_EN_RE.search(reply_text):
+            return violations
+
+        # Check if any verification tools were actually run
+        ran_verification = False
+        for action in self._actions:
+            if action["tool_name"] != "bash":
+                continue
+            cmd = str(action.get("args", {}).get("command", ""))
+            if _VERIFICATION_TOOLS.search(cmd):
+                ran_verification = True
+                break
+
+        if not ran_verification:
+            # Completion claimed but NO verification tools were run at all
+            violations.append({
+                "rule": 7,
+                "claim": "completion_without_verification",
+                "correction": (
+                    "You claimed the task is done but did not run any verification. "
+                    "You MUST run: git diff (to show changes), tests (to verify correctness), "
+                    "and git log --oneline -1 (to confirm commit). "
+                    "Include raw terminal output for each step."
+                ),
+            })
+            return violations
+
+        # Verification tools were run — check if evidence is in the reply
+        has_raw_diff = bool(_DIFF_RAW_RE.search(reply_text))
+        has_raw_test = bool(_TEST_RAW_RE.search(reply_text))
+        has_commit_hash = bool(_COMMIT_HASH_RE.search(reply_text))
+        has_evidence_claim = bool(_EVIDENCE_CLAIM_WORDS.search(reply_text))
+        is_summary_only = has_evidence_claim and not (has_raw_diff or has_raw_test or has_commit_hash)
+
+        missing = []
+        if is_summary_only:
+            missing.append("described verification outcomes but did not include raw terminal output")
+        if not has_raw_diff:
+            missing.append("no raw git diff output in reply")
+        if not has_raw_test:
+            missing.append("no raw test output in reply")
+        if not has_commit_hash:
+            missing.append("no commit hash in reply")
+
+        if missing:
+            violations.append({
+                "rule": 7,
+                "claim": "completion_without_raw_evidence",
+                "correction": (
+                    "Task completion claimed but evidence is incomplete. Missing: "
+                    + "; ".join(missing)
+                    + ". Include the raw terminal output for each step."
+                ),
+            })
+
+        return violations
+
     def scan_reply(self, reply_text: str) -> list[dict]:
         violations: list[dict] = []
         executed = {a["tool_name"] for a in self._actions}
@@ -298,6 +381,10 @@ class TruthfulReporter:
         evidence_violations = self._check_evidence_rule(reply_text)
         violations.extend(evidence_violations)
 
+        # Rule 7: Completion claims must have verification evidence
+        completion_violations = self._check_completion_evidence(reply_text)
+        violations.extend(completion_violations)
+
         if violations:
             self._record_violations(len(violations))
         return violations
@@ -321,6 +408,10 @@ class TruthfulReporter:
         }
         keys = env_map.get(capability_name, [])
         return any(os.environ.get(k) for k in keys) if keys else True
+
+    def has_evidence_violations(self, violations: list[dict]) -> bool:
+        """True if violations include Rule 6 or Rule 7 (evidence-related)."""
+        return any(v.get("rule") in (6, 7) for v in violations)
 
     def reset(self) -> None:
         self._actions.clear()
