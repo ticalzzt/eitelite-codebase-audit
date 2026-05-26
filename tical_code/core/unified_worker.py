@@ -35,6 +35,27 @@ from tical_code.vigil import build_vigil, NewInstruction
 # Workers must NOT reply to each other (creates A↔B ping-pong loops)
 WORKER_IDS = {"seoul", "tico", "ani", "kael", "tico-oracle", "test"}
 
+# === [CMD] Protocol — AI Management Layer ===
+# Authority levels for direct command execution (bypasses LLM)
+CMD_LEVEL_MASTER = 0  # 主人 — full access (deploy, exec, manage any worker)
+CMD_LEVEL_ADMIN  = 1  # AI admin (seoul) — can manage workers, deploy
+CMD_LEVEL_WORKER = 2  # Worker — self-manage only (restart self, ping, escalate)
+
+# Identities recognized as 主人 (Level 0) — tical-chat sender names
+MASTER_IDS = {"tical", "tiCal", "zizetu"}
+
+# CMD permissions: {command_name: minimum_level}
+CMD_PERMISSIONS = {
+    "deploy":   CMD_LEVEL_ADMIN,   # git pull + restart self/others
+    "status":   CMD_LEVEL_ADMIN,   # return worker version/uptime info
+    "restart":  CMD_LEVEL_WORKER,  # restart (worker=only self, admin=any)
+    "exec":     CMD_LEVEL_MASTER,  # arbitrary bash command (master only)
+    "report":   CMD_LEVEL_ADMIN,   # full system status summary
+    "escalate": CMD_LEVEL_WORKER,  # worker → seoul for help
+    "ping":     CMD_LEVEL_WORKER,  # connectivity test
+    "help":     CMD_LEVEL_WORKER,  # show available commands
+}
+
 logger = logging.getLogger("tical-code.worker")
 logging.basicConfig(
     level=logging.INFO,
@@ -455,6 +476,241 @@ class Worker:
             chat_id=msg.chat_id,
         ))
 
+    # ------------------------------------------------------------------
+    # [CMD] Protocol — direct command execution (no LLM)
+    # ------------------------------------------------------------------
+
+    def _cmd_get_level(self, sender: str, msg: Message) -> int:
+        """Determine authority level for a [CMD] sender.
+
+        Level 0 (Master/主人): tical-chat MASTER_IDS, or human channels.
+        Level 1 (Admin): seoul.
+        Level 2 (Worker): any known worker in WORKER_IDS.
+        """
+        if sender.lower() in {m.lower() for m in MASTER_IDS}:
+            return CMD_LEVEL_MASTER
+        if sender in WORKER_IDS:
+            if sender == "seoul":
+                return CMD_LEVEL_ADMIN
+            return CMD_LEVEL_WORKER
+        # Fallback: unknown sender from human channel = master
+        if msg.source in ("telegram", "weixin"):
+            return CMD_LEVEL_MASTER
+        return CMD_LEVEL_WORKER
+
+    def _send_cmd_reply(self, channel, msg: Message, text: str) -> None:
+        """Send a CMD execution result back to the requester."""
+        logger.info(f"[CMD] reply to {msg.sender}: {text[:80]}")
+        if channel:
+            channel.send(Response(
+                content=text, target=msg.sender,
+                source=msg.source, chat_id=msg.chat_id,
+            ))
+
+    def _exec_cmd(self, cmd_name: str, cmd_args: list[str],
+                  msg: Message, channel) -> str:
+        """Execute a single CMD command locally. Returns result string."""
+        if cmd_name == "ping":
+            import socket
+            return f"pong from {self.name}@{socket.gethostname()}"
+
+        if cmd_name == "help":
+            lines = [
+                "[CMD] Protocol — available commands:",
+                "",
+            ]
+            for c, lvl in sorted(CMD_PERMISSIONS.items()):
+                level_name = ["MASTER", "ADMIN", "WORKER"][lvl]
+                lines.append(f"  {c:12s} [{level_name}]")
+            lines.append("")
+            lines.append("Usage: [CMD] <command> [target:worker] [args...]")
+            lines.append("  target:worker — forward to another worker")
+            lines.append("  Level 2 workers can only target themselves")
+            return "\n".join(lines)
+
+        if cmd_name == "status":
+            import socket
+            import subprocess as _sp
+            lines = [
+                f"Worker: {self.name}",
+                f"Host:   {socket.gethostname()}",
+                f"Model:  {self.cfg.get('ai_model', '?')}",
+                f"Venv:   {sys.prefix}",
+            ]
+            # Git info
+            try:
+                _r = _sp.run(["git", "log", "--oneline", "-1"],
+                             capture_output=True, text=True, timeout=5)
+                if _r.returncode == 0:
+                    lines.append(f"Git:    {_r.stdout.strip()[:60]}")
+            except Exception:
+                pass
+            return "\n".join(lines)
+
+        if cmd_name == "report":
+            import socket
+            import subprocess as _sp
+            lines = [
+                f"==============================",
+                f"  {self.name.upper()} System Report",
+                f"==============================",
+                f"Worker:   {self.name}",
+                f"Host:     {socket.gethostname()}",
+                f"Model:    {self.cfg.get('ai_model', '?')}",
+                f"Uptime:",
+            ]
+            try:
+                _r = _sp.run(["uptime"], capture_output=True, text=True, timeout=5)
+                lines.append(f"          {_r.stdout.strip()}")
+            except Exception:
+                pass
+            # Git
+            try:
+                _r = _sp.run(["git", "log", "--oneline", "-3"],
+                             capture_output=True, text=True, timeout=5)
+                if _r.returncode == 0:
+                    lines.append(f"Recent:   {_r.stdout.strip()}")
+            except Exception:
+                pass
+            # Disk
+            try:
+                _r = _sp.run(["df", "-h", "--output=pcent", "/"],
+                             capture_output=True, text=True, timeout=5)
+                _disk = _r.stdout.strip().split("\n")[-1].strip() if _r.stdout else "?"
+                lines.append(f"Disk:     {_disk}")
+            except Exception:
+                pass
+            return "\n".join(lines)
+
+        if cmd_name == "deploy":
+            # Git pull + restart
+            import subprocess as _sp
+            _result_parts = []
+            try:
+                _r = _sp.run(["git", "pull"], capture_output=True, text=True, timeout=60)
+                _result_parts.append(f"git pull: {_r.stdout.strip()[:200]}")
+                if _r.stderr:
+                    _result_parts.append(f"  stderr: {_r.stderr.strip()[:200]}")
+            except Exception as e:
+                _result_parts.append(f"git pull error: {e}")
+            # Trigger restart_self
+            try:
+                from tical_code.core.tool_executor import execute as _exec
+                r = _exec("restart_self", {}, base_dir=self.workspace)
+                _result_parts.append(f"restart: {str(r)[:100]}")
+            except Exception as e:
+                _result_parts.append(f"restart error: {e}")
+            return "\n".join(_result_parts)
+
+        if cmd_name == "restart":
+            try:
+                from tical_code.core.tool_executor import execute as _exec
+                r = _exec("restart_self", {}, base_dir=self.workspace)
+                return f"[CMD] restart: {str(r)[:100]}"
+            except Exception as e:
+                return f"[CMD] restart error: {e}"
+
+        if cmd_name == "escalate":
+            # Send SOS to seoul
+            _reason = " ".join(cmd_args) or "no details"
+            try:
+                from tical_code.core.tool_executor import execute as _exec
+                _exec("chat_send", {
+                    "target": "seoul",
+                    "content": f"[ESCALATION from {self.name}] {_reason}",
+                }, base_dir=self.workspace)
+                return f"[CMD] escalated to seoul: {_reason[:100]}"
+            except Exception as e:
+                return f"[CMD] escalate error: {e}"
+
+        if cmd_name == "exec":
+            payload = " ".join(cmd_args)
+            if not payload:
+                return "[CMD] exec: empty command"
+            import subprocess as _sp
+            try:
+                _r = _sp.run(payload, shell=True, capture_output=True,
+                             text=True, timeout=120)
+                _out = _r.stdout.strip() or f"(exit {_r.returncode})"
+                if _r.stderr:
+                    _out += f"\n[stderr]\n{_r.stderr.strip()[:500]}"
+                return _out[:2000]
+            except _sp.TimeoutExpired:
+                return "[CMD] exec timeout (120s)"
+            except Exception as e:
+                return f"[CMD] exec error: {e}"
+
+        return f"[CMD] unknown: {cmd_name}"
+
+    def _handle_cmd(self, msg: Message, channel) -> None:
+        """Handle a [CMD] protocol message — direct execution, no LLM.
+
+        Format: [CMD] <command> [target:worker] [args...]
+        """
+        content = msg.content.strip()
+        after_prefix = content[len("[CMD]"):].strip()
+        parts = after_prefix.split()
+        if not parts:
+            self._send_cmd_reply(channel, msg, "[CMD] error: empty command")
+            return
+
+        cmd_name = parts[0].lower()
+
+        # Check permissions
+        min_level = CMD_PERMISSIONS.get(cmd_name, CMD_LEVEL_MASTER)
+        sender_level = self._cmd_get_level(msg.sender, msg)
+        if sender_level > min_level:
+            self._send_cmd_reply(
+                channel, msg,
+                f"[CMD] denied: {cmd_name} requires level {min_level}, "
+                f"sender has level {sender_level}"
+            )
+            return
+
+        # Extract target (if any) and remaining args
+        target = None
+        cmd_args = []
+        for p in parts[1:]:
+            if p.startswith("target:") or p.startswith("to:"):
+                target = p.split(":", 1)[1]
+            else:
+                cmd_args.append(p)
+
+        # Enforce: workers can only target themselves
+        min_level_self = CMD_PERMISSIONS.get(cmd_name, CMD_LEVEL_MASTER)
+        if target and sender_level == CMD_LEVEL_WORKER and min_level_self == CMD_LEVEL_WORKER:
+            # Worker restart/ping — must target self or no target
+            if target != self.name:
+                self._send_cmd_reply(
+                    channel, msg,
+                    f"[CMD] denied: workers can only target themselves"
+                )
+                return
+
+        # If targeting another worker, forward via chat_send
+        if target and target != self.name:
+            try:
+                from tical_code.core.tool_executor import execute as _exec
+                _forward_args = {
+                    "target": target,
+                    "content": content,
+                }
+                _exec("chat_send", _forward_args, base_dir=self.workspace)
+                self._send_cmd_reply(
+                    channel, msg,
+                    f"[CMD] forwarded {cmd_name} to {target}"
+                )
+            except Exception as e:
+                self._send_cmd_reply(
+                    channel, msg,
+                    f"[CMD] forward error: {e}"
+                )
+            return
+
+        # Execute locally
+        result = self._exec_cmd(cmd_name, cmd_args, msg, channel)
+        self._send_cmd_reply(channel, msg, result)
+
     def _handle_message(self, channel, msg: Message):
         # Guard: convert string to Message
         if isinstance(msg, str):
@@ -467,6 +723,11 @@ All other messages enter the LLM conversation loop.
         logger.info(
             f"[{msg.source}] {msg.sender}: {msg.content[:100]}"
         )
+
+        # === [CMD] Protocol — direct execution (no LLM) ===
+        if msg.content.strip().startswith("[CMD]"):
+            self._handle_cmd(msg, channel)
+            return
 
         # === Direct execution: seoul commands via tical-chat ===
         # Commands starting with typical bash prefixes go direct
