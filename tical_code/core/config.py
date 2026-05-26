@@ -63,8 +63,6 @@ def load_config() -> dict:
     try:
         if "data_collection" in file_cfg:
             cfg["data_collection"] = file_cfg["data_collection"]
-    except (NameError, Exception):
-        pass
     except Exception:
         pass
 

@@ -455,13 +455,28 @@ def exec_restart_self(args: dict = None) -> dict:
 
 
 def exec_web_fetch(args: dict) -> dict:
-    """Fetch a URL with SSRF protection."""
+    """Fetch a URL. Blocks private IPs (SSRF protection)."""
     url = args.get("url", "")
     timeout = min(int(args.get("timeout", 10)), 30)
     if not url:
         return {"error": "URL cannot be empty"}
     if not url.startswith(("http://", "https://")):
         return {"error": "Only http/https URLs are supported"}
+    # SSRF protection: block private IPs
+    import urllib.parse, socket
+    host = urllib.parse.urlparse(url).hostname
+    if host:
+        try:
+            ip = socket.gethostbyname(host)
+            parts = ip.split(".")
+            if parts[0] in ("10", "127") or \
+               (parts[0] == "172" and 16 <= int(parts[1]) <= 31) or \
+               (parts[0] == "192" and parts[1] == "168") or \
+               (parts[0] == "0" and parts[1] == "0") or \
+               ip == "::1":
+                return {"error": f"SSRF blocked: {host} resolves to private IP {ip}"}
+        except Exception:
+            return {"error": f"Cannot resolve host: {host}"}
     import subprocess
     r = subprocess.run(["curl", "-sL", "--max-time", str(timeout), url],
                       capture_output=True, text=True, timeout=timeout+5)
@@ -471,41 +486,107 @@ def exec_web_fetch(args: dict) -> dict:
 
 
 def exec_file_search(args: dict) -> dict:
-    """Search for files by name or content."""
+    """Search for files by name or content. Respects workspace boundary."""
     pattern = args.get("pattern", "")
     directory = args.get("directory", ".")
     content_pattern = args.get("content_pattern")
     if not pattern:
         return {"error": "Pattern cannot be empty"}
+    # Workspace restriction
+    import os as _os
+    full_dir = _os.path.abspath(_os.path.expanduser(directory))
+    if WORKSPACE and not full_dir.startswith(_os.path.abspath(WORKSPACE)):
+        return {"error": f"Path outside workspace: {directory}"}
     import glob
-    matches = glob.glob(f"{directory}/**/{pattern}", recursive=True)
+    matches = []
+    try:
+        matches = glob.glob(f"{full_dir}/**/{pattern}", recursive=True)
+    except Exception:
+        pass
     if content_pattern:
         import subprocess
         grep_r = subprocess.run(
-            ["grep", "-rl", content_pattern, directory],
+            ["grep", "-rl", content_pattern, full_dir],
             capture_output=True, text=True, timeout=10)
         matches = grep_r.stdout.strip().split("\n") if grep_r.stdout.strip() else []
+    # Filter to workspace only
+    if WORKSPACE:
+        ws = _os.path.abspath(WORKSPACE)
+        matches = [m for m in matches if m.startswith(ws)]
     return {"matches": matches[:100], "count": min(len(matches), 100), "directory": directory}
 
 
 def exec_list_dir(args: dict) -> dict:
-    """List directory contents."""
+    """List directory contents. Respects workspace boundary."""
     path = args.get("path", ".")
     show_all = args.get("all", False)
-    import os
-    files = os.listdir(path)
+    import os as _os
+    full_path = _os.path.abspath(_os.path.expanduser(path))
+    if WORKSPACE and not full_path.startswith(_os.path.abspath(WORKSPACE)):
+        return {"error": f"Path outside workspace: {path}"}
+    try:
+        files = _os.listdir(full_path)
+    except Exception as e:
+        return {"error": f"Cannot list directory: {e}"}
     if not show_all:
         files = [f for f in files if not f.startswith(".")]
     entries = []
     for f in sorted(files):
-        fp = os.path.join(path, f)
+        fp = _os.path.join(full_path, f)
         try:
-            st = os.stat(fp)
-            entries.append({"name": f, "is_dir": os.path.isdir(fp),
+            st = _os.stat(fp)
+            entries.append({"name": f, "is_dir": _os.path.isdir(fp),
                            "size": st.st_size, "modified": int(st.st_mtime)})
         except:
             entries.append({"name": f, "is_dir": False, "size": 0, "modified": 0})
     return {"files": entries, "path": path, "total": len(entries)}
+
+
+def get_memory_injection() -> str:
+    """Load persistent memory and return as text for system prompt injection."""
+    mem_file = Path(WORKSPACE) / "memory.json"
+    if not mem_file.exists():
+        return ""
+    try:
+        mem = json.loads(mem_file.read_text())
+        entries = mem.get("entries", {})
+        if not entries:
+            return ""
+        lines = []
+        for key, val in list(entries.items())[-20:]:
+            text = val.get("value", "") if isinstance(val, dict) else str(val)
+            lines.append(f"- {key}: {str(text)[:200]}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def exec_memory(args: dict) -> dict:
+    """Save result to persistent memory. Params: action(add), target(memory), content(str)."""
+    action = args.get("action", "add")
+    content = args.get("content", "")
+    if not content:
+        return {"ok": True, "msg": "Empty content, skipping"}
+    mem_file = Path(WORKSPACE) / "memory.json"
+    mem = {}
+    if mem_file.exists():
+        try:
+            mem = json.loads(mem_file.read_text())
+        except Exception:
+            mem = {}
+    mem.setdefault("entries", {})
+    key = f"auto_{int(time.time())}"
+    mem["entries"][key] = {"value": content, "time": time.time()}
+    # Keep max 100 entries
+    if len(mem["entries"]) > 100:
+        old_keys = sorted(mem["entries"].keys())[:-100]
+        for k in old_keys:
+            del mem["entries"][k]
+    try:
+        mem_file.write_text(json.dumps(mem, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+    return {"ok": True, "key": key}
 
 
 # ============ 分发器 ============
