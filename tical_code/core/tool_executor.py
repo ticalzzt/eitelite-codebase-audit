@@ -1,41 +1,25 @@
-"""Tool executor - safe execution + post-execution verification."""
+"""工具执行器 — 安全执行 + 执行后验证。"""
 
 import json
 import logging
 import os
 import re
 import subprocess
-import urllib.parse
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("tical-code.executor")
+logger = logging.getLogger("tical_code.seoul.tool_executor")
+# Also create legacy name for log filtering
+_log_legacy = logging.getLogger("tical-code.executor")
 
-# Workspace: restrict writes, allow reads everywhere
+# 安全工作区：严格限制到 worker 目录
 WORKSPACE = os.environ.get("TICOBOT_DIR", "")
 if not WORKSPACE:
     logger.warning("[executor] TICOBOT_DIR not set, workspace unrestricted")
 WORKSPACE = os.path.expanduser(WORKSPACE) if WORKSPACE else os.path.expanduser("~")
 
-# === System paths — never write outside workspace ===
-# These are always-protected even if they happen to fall within workspace
-PROTECTED_SYSTEM_PATHS = [
-    "/opt/",
-    "/etc/",
-    "/root/",
-    "/var/lib/",
-    "/boot/",
-    "/usr/",
-]
-
-# Paths always allowed for writes (temp files, caches)
-ALLOWED_WRITE_PATHS = [
-    "/tmp/",
-    "/var/tmp/",
-]
-
-# === Absolutely forbidden commands (always block) ===
+# 完全禁止的命令
 BASH_BLACKLIST = [
     r"\breboot\b",
     r"\bshutdown\b",
@@ -45,18 +29,7 @@ BASH_BLACKLIST = [
     r"\brm\s+-rf\s+/\s*$",
     r"\brm\s+-rf\s+~$",
     r"\brm\s+-rf\s+\$HOME\b",
-    # Block rm -rf on protected system paths
-    r"\brm\s+-rf\s+/opt/",
-    r"\brm\s+-rf\s+/etc/",
-    r"\brm\s+-rf\s+/root/",
-    r"\brm\s+-rf\s+/boot/",
-    r"\brm\s+-rf\s+/var/lib/",
-    r"\brm\s+-rf\s+/usr/",
-    # Block rm on SSH keys (even without -rf)
-    r"\brm\s+(?:-rf\s+)?.*\.ssh/authorized_keys\b",
-    r"\brm\s+(?:-rf\s+)?.*\.ssh/id_",
     r"\bcurl\s+.*\|\s*(ba|sh)\b",
-    r"\bwget\s+.*\|\s*(ba|sh)\b",
     r"\biptables\s+-F\b",
     r"\biptables\s+-X\b",
     r"\bdd\s+if=/\w+\s+of=/\w+\b",
@@ -66,127 +39,57 @@ BASH_BLACKLIST = [
     r"\bsudo\s+rm\s+-rf\b",
     r">\s*/dev/(sda|sdb|nvme|hd)",
     r":\(\)\s*\{",  # fork bomb
+    r"\bwget\s+.*\|\s*(ba|sh)\b",
 ]
 
 BASH_BLACKLIST_RE = [re.compile(p) for p in BASH_BLACKLIST]
 
-# === Write indicators — commands that modify the filesystem ===
-WRITE_INDICATORS = [
-    r"\btee\b", r"\binstall\b", r"\bpip\s+install\b", r"\bapt\b",
-    r"\byum\b", r"\bdnf\b", r"\bsnap\b",
-    r">\s*", r">>\s*",  # shell redirects (output write)
-    r"\bcp\s+", r"\bmv\s+", r"\bchmod\b", r"\bchown\b",
-    r"\bmkdir\b", r"\brmdir\b", r"\brm\b",
-    r"\bgit\s+push\b", r"\bgit\s+commit\b",
-    r"\bsystemctl\s+(start|stop|restart|enable|disable)\b",
-    r"\bservice\s+\w+\s+(start|stop|restart)\b",
-]
-
-WRITE_INDICATORS_RE = [re.compile(p) for p in WRITE_INDICATORS]
 
 def _bash_safety_check(command: str) -> Optional[str]:
-    """Safety check: return block reason, None=pass.
-    
-    Policy: read everything, write only in workspace.
-    """
-    # 1. Always-blacklisted commands
+    """安全检查：返回 block 原因，None=通过。"""
     for pattern in BASH_BLACKLIST_RE:
         if pattern.search(command):
             return f"Command blocked by safety policy: {pattern.pattern}"
-
-    # 2. Check if command contains write operations
-    is_write = any(p.search(command) for p in WRITE_INDICATORS_RE)
-
-    if not is_write:
-        # Read-only command — allow anything
-        return None
-
-    # python3 -c "..." -> exempt unless has explicit destructive patterns
-    if command.strip().startswith("python") and " -c " in command:
-        return None
-
-    # 3. Check for protected system paths in write commands
-    # Handles: ~/.ssh/authorized_keys, cd /opt/ && rm *, etc.
-    command_normalized = command.replace("~", str(Path.home()))
-    abs_paths = re.findall(r'(?<!\w)(/[\w./_\-]+)', command_normalized)
-    for p in abs_paths:
-        for protected in PROTECTED_SYSTEM_PATHS:
-            if p.startswith(protected):
-                return f"Write to protected system path denied: {p}"
-        # Also protect .ssh directory at any absolute path
-        if "/.ssh/" in p and ("authorized_keys" in p or "id_" in p):
-            return f"Write to SSH configuration denied: {p}"
-
-    # 4. Write command — check if target is within workspace
-    # Extract likely target paths from the command
-    write_outside = False
-    
-    # Check for redirect targets outside workspace
-    redirect_match = re.search(r'>>?\s*(\S+)', command)
-    if redirect_match:
-        target = redirect_match.group(1)
-        # Skip /dev/ paths (devnull, stderr, stdin are not real file writes)
-        if not target.startswith(("/dev/", "/dev")):
-            # Skip allowed write paths (/tmp, /var/tmp etc.)
-            if any(target.startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
-                pass  # allow
-            else:
-                target_path = Path(target).expanduser().resolve()
-                if WORKSPACE and not str(target_path).startswith(WORKSPACE):
-                    write_outside = True
-    for cmd_prefix in [r'\bcp\s+', r'\bmv\s+']:
-        cp_mv_match = re.search(cmd_prefix + r'.*\s+(\S+)\s*$', command)
-        if cp_mv_match:
-            dest = cp_mv_match.group(1)
-            # Skip allowed write paths (/tmp, /var/tmp etc.)
-            if any(dest.startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
-                continue
-            dest_path = Path(dest).expanduser().resolve()
-            if WORKSPACE and not str(dest_path).startswith(WORKSPACE):
-                write_outside = True
-
-    # Generic check: if command contains absolute paths outside workspace
-    if WORKSPACE:
-        abs_paths = re.findall(r'(?<!\w)(/[^\s;|&>]+)', command)
-        for p in abs_paths:
-            # Skip redirect targets: /dev/null from 2>/dev/null, /path from >/path
-            if re.search(r'(?:^|\s|[;&|])\d*(?:>|>>)\s*' + re.escape(p) + r'(?:\s|$)', command):
-                continue
-            # Skip allowed write paths (/tmp, /var/tmp etc.)
-            if any(p.startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
-                continue
-            resolved = Path(p).resolve()
-            if not str(resolved).startswith(WORKSPACE):
-                # It references a path outside workspace — but only block if writing
-                write_outside = True
-                break
-
-    if write_outside:
-        return f"Write operation outside workspace denied. Workspace: {WORKSPACE}"
-
+    # 工作区检查：超工作区直接报错
+    if WORKSPACE and not WORKSPACE.endswith("/"):
+        WORKSPACE_G = WORKSPACE + "/"
+    else:
+        WORKSPACE_G = WORKSPACE or ""
+    if WORKSPACE_G and any(f" {p}" in command or command.startswith(p) for p in ["cd /", "cat /etc", "ls /etc", "cat /root"]):
+        return f"Outside workspace, system directory access denied"
+    # 工作区限制：只允许在 WORKSPACE 内操作
+    unsafe_ops = [
+        r"cd\s+\.\.", r"cd\s+/[^w]", r">\s*/(?!dev/)[^w]",
+        r"rm\s+[^-]", r"mv\s+/", r"cp\s+/",
+    ]
+    for p in unsafe_ops:
+        if re.search(p, command):
+            return f"Potential privilege escalation (outside workspace {WORKSPACE})"
     return None
 
-def _workspace_path(path: str) -> Path:
-    """Resolve path. Reads allowed anywhere, writes restricted to workspace."""
-    p = Path(path).expanduser().resolve()
-    return p
 
-def _workspace_write_path(path: str) -> Optional[Path]:
-    """Resolve write path. Returns None if outside workspace."""
+def _workspace_path(path: str) -> Path:
+    """将路径解析到工作区内。超出的返回错误。"""
     p = Path(path).expanduser().resolve()
-    # Skip allowed write paths (/tmp, /var/tmp etc.)
-    if any(str(p).startswith(allowed) for allowed in ALLOWED_WRITE_PATHS):
-        return p
     if WORKSPACE and not str(p).startswith(WORKSPACE):
         return None
     return p
 
+
 def _run_cmd(cmd: str, timeout: int = 30) -> dict:
-    """Execute shell command."""
+    """执行 shell 命令。优先用 shlex.split 防注入，必要时回退 shell=True。"""
+    import shlex
+    use_shell = any(c in cmd for c in "|&;<>$`")
     try:
-        r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
-        )
+        if use_shell:
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            )
+        else:
+            args = shlex.split(cmd)
+            r = subprocess.run(
+                args, shell=False, capture_output=True, text=True, timeout=timeout
+            )
         return {
             "stdout": r.stdout.strip()[:4000],
             "stderr": r.stderr.strip()[:1000],
@@ -197,14 +100,15 @@ def _run_cmd(cmd: str, timeout: int = 30) -> dict:
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
 
-# ============ Tool Schemas ============
+
+# ============ 执行器函数 ============
 # === OpenAI Function Calling Schemas ===
 TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Execute shell commands. Read commands work everywhere; write commands restricted to workspace.",
+            "description": "Execute shell commands. Use for file operations, system management, network requests, etc.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -218,11 +122,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "file_read",
-            "description": "Read file content from any path. Auto size-limited to 100KB.",
+            "description": "Read file content.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path to read"}
+                    "path": {"type": "string", "description": "File path"}
                 },
                 "required": ["path"]
             }
@@ -232,11 +136,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "file_write",
-            "description": "Write content to a file. Only allowed within workspace directory.",
+            "description": "Write content to a file.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path to write"},
+                    "path": {"type": "string", "description": "File path"},
                     "content": {"type": "string", "description": "Content to write"}
                 },
                 "required": ["path", "content"]
@@ -246,28 +150,54 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "memory",
-            "description": "Manage persistent memory. 'add' saves a new fact, 'replace' updates an existing one, 'remove' deletes it. Target 'user' for user preferences/profile, 'memory' for environment/project facts. Memory is auto-loaded into context on every turn.",
+            "name": "bash_execute",
+            "description": "Execute shell command with safety check. Automatically verifies command safety.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["add", "replace", "remove"], "description": "add=new fact, replace=update existing, remove=delete"},
-                    "target": {"type": "string", "enum": ["memory", "user"], "description": "memory=environment facts, user=user preferences"},
-                    "content": {"type": "string", "description": "Memory content text (for add/replace)"},
-                    "old_text": {"type": "string", "description": "Unique substring to identify entry for replace/remove"}
+                    "command": {"type": "string", "description": "Shell command to execute"}
                 },
-                "required": ["action", "target", "content"]
+                "required": ["command"]
             }
         }
     },
     {
         "type": "function",
         "function": {
-            "name": "memory_list",
-            "description": "List all saved memories grouped by target type with usage stats.",
+            "name": "memory_save",
+            "description": "Save a piece of persistent memory to file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Memory key name"},
+                    "value": {"type": "string", "description": "Memory value"}
+                },
+                "required": ["key", "value"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_load",
+            "description": "Read all saved persistent memories.",
             "parameters": {
                 "type": "object",
                 "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "description": "Full-text search conversation history. Supports Chinese and English.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "top_k": {"type": "integer", "description": "Number of results", "default": 5}
+                },
+                "required": ["query"]
             }
         }
     },
@@ -301,590 +231,10 @@ TOOL_SCHEMAS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_fetch",
-            "description": "Fetch a web page and extract text content. Handles HTML, encoding, redirects. SSRF-protected (no internal networks).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL to fetch"},
-                    "max_length": {"type": "integer", "description": "Max text length to return (default 5000)", "default": 5000}
-                },
-                "required": ["url"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_image",
-            "description": "Analyze an image with a text prompt using vision AI.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "image_path": {"type": "string", "description": "Path to image file"},
-                    "prompt": {"type": "string", "description": "Question or prompt about the image"}
-                },
-                "required": ["image_path"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "ocr",
-            "description": "Extract text from an image using OCR.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "image_path": {"type": "string", "description": "Path to image file"}
-                },
-                "required": ["image_path"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "patch_file",
-            "description": "Replace first occurrence of old_string with new_string in a file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File path to edit"},
-                    "old_string": {"type": "string", "description": "Text to find"},
-                    "new_string": {"type": "string", "description": "Replacement text"}
-                },
-                "required": ["path", "old_string", "new_string"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_navigate",
-            "description": "Open a URL in the browser.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL to navigate to"}
-                },
-                "required": ["url"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_click",
-            "description": "Click an element on the current page by ref ID.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ref": {"type": "string", "description": "Element ref ID to click"}
-                },
-                "required": ["ref"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_screenshot",
-            "description": "Take a screenshot of the current browser page.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_extract",
-            "description": "Extract text content from the current browser page.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    # ============ Cloud Device (playwright-based browser) ============
-    {
-        "type": "function",
-        "function": {
-            "name": "cloud_device.navigate",
-            "description": "Open a URL in the cloud device browser (playwright).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL to navigate to"},
-                    "device_id": {"type": "string", "description": "Optional device identifier"}
-                },
-                "required": ["url"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cloud_device.click",
-            "description": "Click an element in the cloud device browser by CSS selector.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector"},
-                    "device_id": {"type": "string", "description": "Optional device identifier"}
-                },
-                "required": ["selector"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cloud_device.type",
-            "description": "Type text into an input field in the cloud device browser.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector"},
-                    "text": {"type": "string", "description": "Text to type"},
-                    "device_id": {"type": "string", "description": "Optional device identifier"}
-                },
-                "required": ["selector", "text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cloud_device.screenshot",
-            "description": "Take a screenshot of the cloud device browser page. Returns base64-encoded image.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "full_page": {"type": "boolean", "description": "Full page capture"},
-                    "device_id": {"type": "string", "description": "Optional device identifier"}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cloud_device.extract",
-            "description": "Extract text from the cloud device browser page.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector": {"type": "string", "description": "CSS selector (default: body)"},
-                    "device_id": {"type": "string", "description": "Optional device identifier"}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cloud_device.disconnect",
-            "description": "Disconnect and cleanup the cloud device browser session.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "device_id": {"type": "string", "description": "Optional device identifier"}
-                }
-            }
-        }
-    },
-    # ============ Execute Code (sandboxed Python) ============
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_code",
-            "description": "Run Python code in an isolated subprocess. Has access to: read_file, write_file, search_files, patch. No network/filesystem unrestricted access. 5-min timeout. 50KB output cap. Use for data processing, scripts, and complex multi-tool workflows.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string", "description": "Python code to execute"}
-                },
-                "required": ["code"]
-            }
-        }
-    },
-    # ============ Model Switch / Self Restart ============
-    {
-        "type": "function",
-        "function": {
-            "name": "switch_model",
-            "description": "Switch LLM model at runtime. Provide provider (deepseek/qwen/openai/openrouter) + model name, or custom base_url + api_key. No restart needed.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "model": {"type": "string", "description": "Model name, e.g. deepseek-v4-flash, qwen-plus, gpt-4o"},
-                    "provider": {"type": "string", "description": "Built-in provider: deepseek, qwen, openai, openrouter"},
-                    "api_key": {"type": "string", "description": "API key (uses env var if not provided)"},
-                    "base_url": {"type": "string", "description": "Custom base URL for custom provider"}
-                },
-                "required": ["model"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_models",
-            "description": "List supported LLM providers and their default models.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "self_restart",
-            "description": "Restart the worker. Sends SIGTERM — systemd auto-restarts. Use after model switch for clean state.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reason": {"type": "string", "description": "Restart reason"}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delegate_task",
-            "description": "Delegate a task to a sub-agent process (runs in background). Returns a task_id immediately; poll subagent_result with the task_id to get the result.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task": {"type": "string", "description": "Task description for the sub-agent to accomplish"},
-                    "context": {"type": "string", "description": "Background context / files / constraints for the sub-agent", "default": ""},
-                    "timeout": {"type": "integer", "description": "Max seconds to wait for completion", "default": 120}
-                },
-                "required": ["task"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "subagent_result",
-            "description": "Get the result of a previously delegated sub-agent task. Poll this after delegate_task returns a task_id. Returns 'running' until the sub-agent finishes.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "Task ID from delegate_task"}
-                },
-                "required": ["task_id"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "subagent_list",
-            "description": "List all sub-agent tasks and their current statuses (running/done/error).",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "clarify_goal",
-            "description": "Analyze a goal for ambiguity, missing info, or high risk.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "goal": {"type": "string", "description": "Goal statement to analyze"}
-                },
-                "required": ["goal"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cron_schedule",
-            "description": "Schedule a recurring task.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "schedule": {"type": "string", "description": "Cron expression or interval"},
-                    "task": {"type": "string", "description": "Command or task to execute"},
-                    "name": {"type": "string", "description": "Optional task name"}
-                },
-                "required": ["schedule", "task"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cron_list",
-            "description": "List all scheduled cron tasks.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cron_cancel",
-            "description": "Cancel a scheduled cron task by ID.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "Task ID from cron_list"}
-                },
-                "required": ["task_id"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_fts_search",
-            "description": "Full-text search across all persistent memory.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "top_k": {"type": "integer", "description": "Max results (default 10)", "default": 10}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "xurl_post",
-            "description": "Post a tweet to X/Twitter",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Tweet text"}
-                },
-                "required": ["text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "xurl_browser_post",
-            "description": "Post a tweet to X/Twitter via browser (CDP). No API cost. Requires logged-in Chrome session.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Tweet text content (max 280 chars)"}
-                },
-                "required": ["text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "xurl_browser_reply",
-            "description": "Reply to a tweet via browser (CDP). No API cost. Requires logged-in Chrome session.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tweet_url": {"type": "string", "description": "Full URL of the tweet to reply to"},
-                    "text": {"type": "string", "description": "Reply text content"}
-                },
-                "required": ["tweet_url", "text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "xurl_browser_inject_cookies",
-            "description": "Inject X.com cookies into the CDP browser to restore login session. Call before posting for autonomous X account management.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cookies_json": {"type": "string", "description": "X.com cookies as JSON array. Each: {name, value, domain:'.x.com', path:'/', httpOnly:true, secure:true, sameSite:'Lax', expirationDate:过期时间戳}"}
-                },
-                "required": ["cookies_json"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "xurl_browser_timeline",
-            "description": "Read X/Twitter home timeline via CDP browser. No API cost.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "anchor_ping",
-            "description": "Register / heartbeat to the Live Anchor server. Call on startup + every 60s to keep alive.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "description": "Status: 'online', 'busy', 'maintenance'"}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "anchor_list",
-            "description": "List all registered agents from the Live Anchor.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "anchor_report",
-            "description": "Report task completion with result and trigger git commit for persistence. Call after finishing any significant work.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "current_task": {"type": "string", "description": "Task name/ID that was completed"},
-                    "result": {"type": "string", "description": "Result summary"},
-                    "task_type": {"type": "string", "description": "Type: fix / deploy / test / review"}
-                },
-                "required": ["current_task", "result"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "anchor_task_enqueue",
-            "description": "Enqueue a task for a worker. Target 'any' = first available worker picks it up.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "Worker name or 'any'"},
-                    "task": {"type": "string", "description": "Task description"},
-                    "sender": {"type": "string", "description": "Who sent it"}
-                },
-                "required": ["task"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "anchor_task_dequeue",
-            "description": "Pick up the next queued task for this worker.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "anchor_task_complete",
-            "description": "Mark a task done/failed with result.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "integer", "description": "Task ID from dequeue"},
-                    "result": {"type": "string", "description": "Result summary"},
-                    "status": {"type": "string", "description": "done or failed"}
-                },
-                "required": ["task_id", "result"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "anchor_task_list",
-            "description": "List all queued/running/completed tasks.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "xurl_reply",
-            "description": "Reply to an existing tweet",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tweet_id": {"type": "string", "description": "ID of tweet to reply to"},
-                    "text": {"type": "string", "description": "Reply text"}
-                },
-                "required": ["tweet_id", "text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "xurl_timeline",
-            "description": "Get a users timeline",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "username": {"type": "string"},
-                    "count": {"type": "integer"}
-                },
-                "required": ["username"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the internet via DuckDuckGo/SearXNG. Returns URLs and snippets.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "max_results": {"type": "integer", "description": "Max results (default 5)", "default": 5}
-                },
-                "required": ["query"]
-            }
-        }
-    },
 ]
 
-# ============ TOOL_SCHEMAS_CLEAN (remove bash_execute + replace dots for API compat) ============
 
-TOOL_SCHEMAS_CLEAN = []
-for s in TOOL_SCHEMAS:
-    if s["function"]["name"] == "bash_execute":
-        continue
-    s_copy = json.loads(json.dumps(s))
-    s_copy["function"]["name"] = s_copy["function"]["name"].replace(".", "__")
-    TOOL_SCHEMAS_CLEAN.append(s_copy)
+
 
 def exec_bash(args: dict) -> dict:
     cmd = args.get("command", "")
@@ -907,11 +257,14 @@ def exec_bash(args: dict) -> dict:
         logger.warning(f"[executor] bash exit={result['exit_code']}: {cmd[:60]}")
     return result
 
+
 def exec_file_read(args: dict, base_dir: str = "") -> dict:
     path = args.get("path", "")
     if not path:
         return {"error": "Path cannot be empty"}
     full_path = _workspace_path(path)
+    if full_path is None:
+        return {"error": f"Path outside workspace: {path}"}
     if not full_path.exists():
         return {"error": f"File not found: {full_path}"}
     if full_path.is_dir():
@@ -925,12 +278,13 @@ def exec_file_read(args: dict, base_dir: str = "") -> dict:
     except Exception as e:
         return {"error": str(e)}
 
+
 def exec_file_write(args: dict, base_dir: str = "") -> dict:
     path = args.get("path", "")
     content = args.get("content", "")
     if not path:
         return {"error": "Path cannot be empty"}
-    full_path = _workspace_write_path(path)
+    full_path = _workspace_path(path)
     if full_path is None:
         return {"error": f"Path outside workspace: {path}"}
     try:
@@ -941,192 +295,81 @@ def exec_file_write(args: dict, base_dir: str = "") -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-_MEMORY_FILE = "~/.tical-code/memory.json"
-_MEMORY_MAX_CHARS = 2200
 
-def _load_memory_store(target: str = "memory") -> list:
-    """Load memory entries for a target type."""
-    import json as _json
-    mem_file = os.path.expanduser(_MEMORY_FILE)
-    try:
-        if os.path.exists(mem_file):
-            data = _json.loads(open(mem_file).read())
-            return data.get(target, data.get("entries", {}).get(target, []))
-    except Exception:
-        pass
-    return []
-
-def _save_memory_store(target: str, entries: list):
-    """Save memory entries for a target type."""
-    import json as _json
-    mem_file = os.path.expanduser(_MEMORY_FILE)
-    data = {"memory": [], "user": []}
-    try:
-        if os.path.exists(mem_file):
-            existing = _json.loads(open(mem_file).read())
-            data["memory"] = existing.get("memory", existing.get("entries", {}).get("memory", []))
-            data["user"] = existing.get("user", existing.get("entries", {}).get("user", []))
-    except Exception:
-        pass
-    data[target] = entries
-    os.makedirs(os.path.dirname(mem_file), exist_ok=True)
-    with open(mem_file, "w") as f:
-        _json.dump(data, f, ensure_ascii=False, indent=2)
-
-def _memory_total_chars(target: str = None) -> int:
-    """Count total chars across memory entries."""
-    total = 0
-    for t in (["memory", "user"] if target is None else [target]):
-        for e in _load_memory_store(t):
-            total += len(e.get("content", ""))
-    return total
-
-def exec_memory(args: dict, base_dir: str = "") -> dict:
-    """Structured memory: add/replace/remove with target types."""
-    action = args.get("action", "add")
-    target = args.get("target", "memory")
-    content = args.get("content", "").strip()
-    old_text = args.get("old_text", "")
-    
-    if target not in ("memory", "user"):
-        return {"error": f"Invalid target: {target}. Use 'memory' or 'user'."}
-    
-    entries = _load_memory_store(target)
-    
-    if action == "add":
-        if not content:
-            return {"error": "content required for add"}
-        # Check size limit
-        if _memory_total_chars() + len(content) > _MEMORY_MAX_CHARS:
-            # Auto-cleanup: remove oldest entries until fit
-            entries.sort(key=lambda e: e.get("ts", 0))
-            while _memory_total_chars() + len(content) > _MEMORY_MAX_CHARS * 0.9 and entries:
-                removed = entries.pop(0)
-                logger.info(f"[memory] auto-cleanup removed: {removed.get('content','')[:40]}")
-            _save_memory_store(target, entries)
-        entries.append({
-            "content": content,
-            "ts": time.time(),
-            "source": "worker",
-        })
-        _save_memory_store(target, entries)
-        usage = _memory_total_chars()
-        return {"ok": True, "action": "add", "target": target, "usage": f"{usage}/{_MEMORY_MAX_CHARS}"}
-    
-    elif action == "replace":
-        if not old_text:
-            return {"error": "old_text required for replace"}
-        if not content:
-            return {"error": "content required for replace"}
-        found = False
-        for i, e in enumerate(entries):
-            if old_text in e.get("content", ""):
-                entries[i] = {"content": content, "ts": time.time(), "source": "worker"}
-                found = True
-                break
-        if not found:
-            return {"error": f"No entry matching '{old_text}' found in {target}"}
-        _save_memory_store(target, entries)
-        return {"ok": True, "action": "replace", "target": target}
-    
-    elif action == "remove":
-        if not old_text:
-            # Remove all entries in target
-            count = len(entries)
-            _save_memory_store(target, [])
-            return {"ok": True, "action": "remove", "target": target, "removed": count}
-        found = False
-        for i, e in enumerate(entries):
-            if old_text in e.get("content", ""):
-                removed = entries.pop(i)
-                _save_memory_store(target, entries)
-                return {"ok": True, "action": "remove", "target": target, "removed": removed.get("content", "")[:60]}
-        return {"error": f"No entry matching '{old_text}' found in {target}"}
-    
-    return {"error": f"Unknown action: {action}"}
-
-def exec_memory_list(args: dict = None, base_dir: str = "") -> dict:
-    """List all memories grouped by target with stats."""
-    mem = {"memory": _load_memory_store("memory"), "user": _load_memory_store("user")}
-    total = len(mem["memory"]) + len(mem["user"])
-    chars = _memory_total_chars()
-    result = {
-        "total_entries": total,
-        "total_chars": chars,
-        "max_chars": _MEMORY_MAX_CHARS,
-        "usage_pct": round(chars / _MEMORY_MAX_CHARS * 100, 1),
-        "memory": mem["memory"],
-        "user": mem["user"],
-    }
-    # Truncate content in response
-    for t in ("memory", "user"):
-        for e in result[t]:
-            e["content"] = e.get("content", "")[:200]
-    return result
-
-def get_memory_injection() -> str:
-    """Return memory entries formatted for system prompt injection."""
-    mem = _load_memory_store("memory")
-    user = _load_memory_store("user")
-    parts = []
-    if mem:
-        parts.append("MEMORY (environment facts):")
-        for i, e in enumerate(mem):
-            parts.append(f"§ {e.get('content', '')[:160]}")
-    if user:
-        parts.append("USER PROFILE:")
-        for i, e in enumerate(user):
-            parts.append(f"§ {e.get('content', '')[:160]}")
-    if parts:
-        return "\n".join(parts)
-    return ""
-
-def _try_chat_url(urls: list, target: str, content: str, identity: str, key: str) -> dict:
-    """Try each tical-chat URL in order. Returns first success or last error."""
-    import urllib.request, ssl
-    last_error = ""
-    for url in urls:
-        if not url:
-            continue
+def exec_memory_save(args: dict, base_dir: str = "") -> dict:
+    key = args.get("key", "")
+    value = args.get("value", "")
+    if not key:
+        return {"error": "Key cannot be empty"}
+    mem_file = Path(base_dir or WORKSPACE) / "memory.json"
+    mem = {}
+    if mem_file.exists():
         try:
-            payload = json.dumps({
-                "sender": identity, "target": target, "content": content,
-            }).encode()
-            req = urllib.request.Request(
-                f"{url.rstrip('/')}/v1/messages", data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-AI-Identity": identity, "X-AI-Key": key,
-                }, method="POST")
-            with urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context()) as resp:
-                resp_data = json.loads(resp.read())
-            logger.info(f"[executor] chat_send to {target} via {url}: {content[:50]}")
-            return {"ok": True, "target": target, "response": resp_data}
-        except Exception as e:
-            last_error = str(e)
-            logger.warning(f"[executor] chat_send failed on {url}: {e}")
-    return {"error": f"Send failed on all endpoints: {last_error}"}
+            mem = json.loads(mem_file.read_text())
+        except Exception:
+            mem = {}
+    mem.setdefault("entries", {})[key] = {"value": value, "time": time.time()}
+    mem_file.write_text(json.dumps(mem, ensure_ascii=False, indent=2))
+    return {"ok": True, "key": key}
+
+
+def exec_memory_load(args: dict = None, base_dir: str = "") -> dict:
+    mem_file = Path(base_dir or WORKSPACE) / "memory.json"
+    if not mem_file.exists():
+        return {"entries": {}}
+    try:
+        mem = json.loads(mem_file.read_text())
+        return {"entries": mem.get("entries", {})}
+    except Exception:
+        return {"entries": {}}
+
+    try:
+        from .memory_sense import conversation_search
+    except ImportError:
+        return {"error": "memory_sense module unavailable"}
+    query = args.get("query", "")
+    if not query:
+        return {"error": "Query cannot be empty"}
+    session_id = args.get("session_id")
+    top_k = min(int(args.get("top_k", 5)), 20)
+    results = conversation_search(query, session_id=session_id, top_k=top_k)
+    return {"results": results, "total": len(results)}
+
 
 def exec_chat_send(args: dict) -> dict:
     target = args.get("target", "")
     content = args.get("content", "")
     if not target or not content:
         return {"error": "Target and content cannot be empty"}
-    # Enforce: only reply to the worker's current reply target
-    import tical_code.core.tool_executor as _te
-    if hasattr(_te, "_reply_target") and _te._reply_target:
-        if target != _te._reply_target:
-            logger.info(f"[executor] chat_send target override: {target} -> {_te._reply_target}")
-            target = _te._reply_target
-    chan_key = os.environ.get("TICAL_CHAT_KEY", "")
-    if not chan_key:
-        return {"error": "TICAL_CHAT_KEY not set in environment"}
-    identity = os.environ.get("WORKER_NAME", "seoul")
-    urls_str = os.environ.get("TICAL_CHAT_URL", "")
-    urls = [u.strip() for u in urls_str.split(",") if u.strip()]
-    if not urls:
-        return {"error": "TICAL_CHAT_URL not set in environment"}
-    return _try_chat_url(urls, target, content, identity, chan_key)
+    try:
+        import urllib.request
+        import ssl
+        chan_url = os.environ.get("TICAL_CHAT_URL", "")
+        chan_key = os.environ.get("TICAL_CHAT_KEY", "")
+        identity = os.environ.get("WORKER_NAME", "seoul")
+        payload = json.dumps({
+            "sender": identity,
+            "target": target,
+            "content": content,
+        }).encode()
+        req = urllib.request.Request(
+            f"{chan_url}/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-AI-Identity": identity,
+                "X-AI-Key": chan_key,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context()) as resp:
+            resp_data = json.loads(resp.read())
+        logger.info(f"[executor] chat_send to {target}: {content[:50]}")
+        return {"ok": True, "target": target, "response": resp_data}
+    except Exception as e:
+        logger.warning(f"[executor] chat_send error: {e}")
+        return {"error": f"Send failed: {e}"}
+
 
 def exec_state_save(args: dict, base_dir: str = "") -> dict:
     key = args.get("key", "")
@@ -1138,1209 +381,34 @@ def exec_state_save(args: dict, base_dir: str = "") -> dict:
     (state_dir / f"{key}.json").write_text(json.dumps(value, ensure_ascii=False, indent=2))
     return {"ok": True, "key": key}
 
-def exec_web_fetch(args: dict) -> dict:
-    """Fetch a web page and extract text content. SSRF-protected."""
-    url = args.get("url", "")
-    if not url:
-        return {"error": "URL cannot be empty"}
-    if not url.startswith(("http://", "https://")):
-        return {"error": "Only http:// and https:// URLs allowed"}
 
-    # SSRF check: block private/internal IPs
-    import ipaddress
-    import socket as _socket
-    try:
-        parsed = urllib.parse.urlparse(url)
-        hostname = parsed.hostname
-        if hostname:
-            addr_info = _socket.getaddrinfo(hostname, None)
-            for info in addr_info:
-                ip = info[4][0]
-                ip_obj = ipaddress.ip_address(ip)
-                if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_reserved:
-                    return {"error": f"SSRF blocked: {hostname} resolves to private IP"}
-    except Exception:
-        pass  # DNS failure, let it try
-
-    max_length = min(int(args.get("max_length", 5000)), 20000)
-    try:
-        import ssl as _ssl
-        ctx = _ssl.create_default_context()
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 tical-code/0.12",
-        })
-        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-            raw = resp.read(200000)  # 200KB max
-            # Detect encoding
-            charset = resp.headers.get_content_charset() or "utf-8"
-            text = raw.decode(charset, errors="replace")
-            # Strip HTML tags for plain text
-            import re as _re
-            text = _re.sub(r'<script[^>]*>.*?</script>', '', text, flags=_re.DOTALL)
-            text = _re.sub(r'<style[^>]*>.*?</style>', '', text, flags=_re.DOTALL)
-            text = _re.sub(r'<[^>]+>', ' ', text)
-            text = _re.sub(r'\s+', ' ', text).strip()
-            return {"content": text[:max_length], "url": url, "length": len(text)}
-    except Exception as e:
-        return {"error": f"Fetch failed: {e}"}
-
-# ============ Vision 2 Tools ============
-
-def exec_analyze_image(args: dict) -> dict:
-    """Analyze an image with a text prompt using VisionPlugin."""
-    try:
-        from tical_code.plugins.vision import VisionPlugin
-        plugin = VisionPlugin()
-        result = plugin.analyze_image(
-            image_path=args["image_path"],
-            prompt=args.get("prompt", "")
-        )
-        return {"content": str(result)}
-    except ImportError:
-        return {"error": "Vision plugin not available"}
-    except Exception as e:
-        return {"error": f"Vision analyze_image failed: {e}"}
-
-def exec_ocr(args: dict) -> dict:
-    """Extract text from an image using VisionPlugin OCR."""
-    try:
-        from tical_code.plugins.vision import VisionPlugin
-        plugin = VisionPlugin()
-        result = plugin.ocr(image_path=args["image_path"])
-        return {"content": str(result)}
-    except ImportError:
-        return {"error": "Vision plugin not available"}
-    except Exception as e:
-        return {"error": f"Vision OCR failed: {e}"}
-
-# ============ Patch 1 Tool ============
-
-def exec_patch_file(args: dict) -> dict:
-    """Replace first occurrence of old_string with new_string in a file."""
-    path = args["path"]
-    old = args["old_string"]
-    new = args["new_string"]
-    try:
-        with open(path) as f:
-            c = f.read()
-        if old not in c:
-            return {"error": "old_string not found"}
-        with open(path, "w") as f:
-            f.write(c.replace(old, new, 1))
-        return {"ok": True, "path": path}
-    except Exception as e:
-        return {"error": str(e)}
-
-# ============ Browser 4 Tools ============
-
-_executor_browser = None
-
-def _get_browser():
-    global _executor_browser
-    if _executor_browser is None:
-        from tical_code.plugins.browser.browser_controller import BrowserController
-        # First try: connect to existing Chrome via CDP (from env CDP_URL)
-        import os
-        cdp_url = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
-        headless = os.environ.get("CDP_HEADLESS", "1") == "1"
-        proxy = os.environ.get("CDP_PROXY", "") or None
-        _executor_browser = BrowserController(cdp_url=cdp_url, headless=headless, proxy=proxy)
-        import asyncio
-        try:
-            asyncio.run(_executor_browser.start())
-        except Exception as e:
-            logger.warning(f"CDP browser connect failed ({e}), falling back to headless auto-launch")
-            _executor_browser = BrowserController(headless=True)
-            asyncio.run(_executor_browser.start())
-    return _executor_browser
-
-def exec_browser_navigate(args: dict) -> dict:
-    """Open a URL in the browser."""
-    import asyncio
-    try:
-        url = args["url"]
-        bc = _get_browser()
-        result = asyncio.run(bc.navigate(url))
-        return {"ok": True, "url": url}
-    except Exception as e:
-        return {"error": f"Browser navigate failed: {e}"}
-
-def exec_browser_click(args: dict) -> dict:
-    """Click an element by ref ID."""
-    import asyncio
-    try:
-        ref = args["ref"]
-        bc = _get_browser()
-        result = asyncio.run(bc.click(ref))
-        return {"ok": True, "ref": ref}
-    except Exception as e:
-        return {"error": f"Browser click failed: {e}"}
-
-def exec_browser_screenshot(args: dict) -> dict:
-    """Take a browser screenshot."""
-    import asyncio
-    try:
-        bc = _get_browser()
-        result = asyncio.run(bc.screenshot())
-        return {"ok": True, "result": str(result)}
-    except Exception as e:
-        return {"error": f"Browser screenshot failed: {e}"}
-
-def exec_browser_extract(args: dict) -> dict:
-    """Extract text from the current page."""
-    import asyncio
-    import json as _json
-    try:
-        bc = _get_browser()
-        raw = asyncio.run(bc.extract())
-        # CDP controller returns JSON string
-        try:
-            data = _json.loads(raw) if isinstance(raw, str) else raw
-            return {
-                "title": data.get("title", ""),
-                "content": data.get("text", ""),
-                "interactive": data.get("interactive", []),
-            }
-        except (_json.JSONDecodeError, TypeError):
-            return {"content": str(raw)}
-    except Exception as e:
-        return {"error": f"Browser extract failed: {e}"}
-
-
-# ============ Cloud Device Executors (playwright) ============
-
-_executor_cloud_devices = {}
-
-def _get_cloud_device(device_id: str = "default"):
-    """Get or create a cloud device BrowserTool instance."""
-    global _executor_cloud_devices
-    if device_id not in _executor_cloud_devices:
-        from tical_code.plugins.cloud_device import BrowserTool
-        _executor_cloud_devices[device_id] = BrowserTool(device_id=device_id)
-    return _executor_cloud_devices[device_id]
-
-def exec_cloud_navigate(args: dict) -> dict:
-    """Open URL in cloud device browser."""
-    import asyncio
-    try:
-        url = args["url"]
-        device_id = args.get("device_id", "default")
-        bt = _get_cloud_device(device_id)
-        result = asyncio.run(bt.open(url))
-        if not result.success and not bt._using_playwright and not bt._using_selenium:
-            return {"error": f"No browser engine available. Install playwright: pip install playwright && playwright install chromium"}
-        return {"ok": True, "url": url, "device_id": device_id, "screenshot": result.screenshot, "title": result.page_title}
-    except Exception as e:
-        return {"error": f"Cloud device navigate failed: {e}"}
-
-def exec_cloud_click(args: dict) -> dict:
-    """Click element in cloud device browser."""
-    import asyncio
-    try:
-        selector = args["selector"]
-        device_id = args.get("device_id", "default")
-        bt = _get_cloud_device(device_id)
-        if not bt._using_playwright and not bt._using_selenium:
-            return {"error": "No browser engine. Install playwright: pip install playwright && playwright install chromium"}
-        result = asyncio.run(bt.click(selector))
-        return {"ok": True, "selector": selector, "device_id": device_id, "screenshot": result.screenshot}
-    except Exception as e:
-        return {"error": f"Cloud device click failed: {e}"}
-
-def exec_cloud_type(args: dict) -> dict:
-    """Type text in cloud device browser."""
-    import asyncio
-    try:
-        selector = args["selector"]
-        text = args["text"]
-        device_id = args.get("device_id", "default")
-        bt = _get_cloud_device(device_id)
-        if not bt._using_playwright and not bt._using_selenium:
-            return {"error": "No browser engine. Install playwright: pip install playwright && playwright install chromium"}
-        result = asyncio.run(bt.type_text(selector, text))
-        return {"ok": True, "selector": selector, "device_id": device_id}
-    except Exception as e:
-        return {"error": f"Cloud device type failed: {e}"}
-
-def exec_cloud_screenshot(args: dict) -> dict:
-    """Take screenshot of cloud device browser."""
-    import asyncio
-    try:
-        full_page = args.get("full_page", False)
-        device_id = args.get("device_id", "default")
-        bt = _get_cloud_device(device_id)
-        if not bt._using_playwright and not bt._using_selenium:
-            return {"error": "No browser engine. Install playwright: pip install playwright && playwright install chromium"}
-        screenshot = asyncio.run(bt.screenshot(full_page=full_page))
-        if screenshot:
-            return {"ok": True, "screenshot": screenshot, "device_id": device_id}
-        return {"error": "Screenshot returned empty"}
-    except Exception as e:
-        return {"error": f"Cloud device screenshot failed: {e}"}
-
-def exec_cloud_extract(args: dict) -> dict:
-    """Extract text from cloud device browser."""
-    import asyncio
-    try:
-        device_id = args.get("device_id", "default")
-        selector = args.get("selector", "body")
-        bt = _get_cloud_device(device_id)
-        result = asyncio.run(bt.extract(selector))
-        text = ""
-        if result.extracted_data:
-            if isinstance(result.extracted_data, dict):
-                text = result.extracted_data.get("text", str(result.extracted_data))
-            else:
-                text = str(result.extracted_data)
-        return {"content": text, "device_id": device_id}
-    except Exception as e:
-        return {"error": f"Cloud device extract failed: {e}"}
-
-def exec_cloud_disconnect(args: dict) -> dict:
-    """Disconnect cloud device browser."""
-    import asyncio
-    try:
-        device_id = args.get("device_id", "default")
-        global _executor_cloud_devices
-        if device_id in _executor_cloud_devices:
-            bt = _executor_cloud_devices.pop(device_id)
-            if bt._using_playwright or bt._using_selenium:
-                asyncio.run(bt.disconnect())
-            return {"ok": True, "device_id": device_id}
-        return {"ok": True, "device_id": device_id, "note": "not connected"}
-    except Exception as e:
-        return {"error": f"Cloud device disconnect failed: {e}"}
-
-
-# ============ Model Switch ============
-
-_executor_llm = None  # Set by unified_worker at startup
-_pending_model_switch = None  # {model, api_key, base_url} set by switch_model
-
-
-def exec_switch_model(args: dict) -> dict:
-    """Switch LLM model at runtime. Updates _executor_llm global."""
-    global _executor_llm, _pending_model_switch
-    import os
-    try:
-        model = args.get("model", "")
-        if not model:
-            return {"error": "model required"}
-        
-        provider = args.get("provider", "").lower()
-        api_key = args.get("api_key", "")
-        base_url = args.get("base_url", "")
-        
-        # Built-in provider shortcuts
-        providers = {
-            "deepseek": {"base_url": "https://api.deepseek.com/v1", "key_env": "DEEPSEEK_API_KEY"},
-            "qwen": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "key_env": "QWEN_API_KEY"},
-            "openai": {"base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY"},
-            "openrouter": {"base_url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY"},
-            "mimo": {"base_url": "https://token-plan-sgp.xiaomimimo.com/v1", "key_env": "MIMO_API_KEY"},
-        }
-        
-        if provider and provider in providers:
-            info = providers[provider]
-            if not base_url:
-                base_url = info["base_url"]
-            if not api_key:
-                api_key = os.environ.get(info["key_env"], "")
-        
-        # Pull missing values from current backend
-        if _executor_llm:
-            if not api_key:
-                api_key = getattr(_executor_llm, "_api_key", "")
-            if not base_url:
-                base_url = getattr(_executor_llm, "_base_url", "")
-        if not api_key or not base_url:
-            # Last resort: try config files
-            from tical_code.core.llm_backend import _load_configs
-            configs = _load_configs()
-            if configs:
-                cfg, src = configs[0]
-                if not api_key:
-                    api_key = cfg.get("ai_key", "")
-                if not base_url:
-                    base_url = cfg.get("ai_endpoint", "")
-        
-        if not api_key:
-            return {"error": "No API key found. Provide api_key or set env var."}
-        if not base_url:
-            return {"error": "No base_url. Provide base_url or use a provider name."}
-        
-        # Store pending switch
-        _pending_model_switch = {
-            "model": model,
-            "api_key": api_key,
-            "base_url": base_url,
-        }
-        
-        # Apply immediately if backend exists
-        if _executor_llm:
-            from tical_code.core.llm_backend import OpenAIBackend
-            if isinstance(_executor_llm, OpenAIBackend):
-                result = _executor_llm.set_model(model, api_key, base_url)
-                _pending_model_switch = None
-                return result
-        
-        return {
-            "ok": True,
-            "model": model,
-            "base_url": base_url,
-            "status": "pending (worker will pick up on next call)"
-        }
-    except Exception as e:
-        return {"error": f"switch_model failed: {e}"}
-
-
-def exec_list_models(args: dict) -> dict:
-    """List available built-in providers."""
-    global _executor_llm
-    try:
-        if _executor_llm and hasattr(_executor_llm, "list_models"):
-            models = _executor_llm.list_models()
-            return {"ok": True, "models": models}
-        providers = [
-            {"provider": "deepseek", "base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-v4-flash"},
-            {"provider": "qwen", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "default_model": "qwen-plus"},
-            {"provider": "openai", "base_url": "https://api.openai.com/v1", "default_model": "gpt-4o"},
-            {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "default_model": "openai/gpt-4o"},
-            {"provider": "mimo", "base_url": "https://token-plan-sgp.xiaomimimo.com/v1", "default_model": "gemini-2.5-pro"},
-        ]
-        return {"ok": True, "models": providers}
-    except Exception as e:
-        return {"error": f"list_models failed: {e}"}
-
-
-def exec_self_restart(args: dict) -> dict:
-    """Restart the worker process. Graceful exit — systemd auto-restarts."""
-    import os, signal
-    try:
-        reason = args.get("reason", "user request")
-        pid = os.getpid()
-        logger = logging.getLogger("tical-code.executor")
-        logger.warning(f"Self-restart triggered: {reason} (PID {pid})")
-        # Schedule exit after response is sent
-        import threading
-        threading.Timer(1.0, lambda: os.kill(pid, signal.SIGTERM)).start()
-        return {"ok": True, "message": f"Restart scheduled: {reason}", "pid": pid}
-    except Exception as e:
-        return {"error": f"self_restart failed: {e}"}
-
-
-# ============ Execute Code (sandboxed Python) ============
-
-def exec_execute_code(args: dict) -> dict:
-    """Run Python code in isolated subprocess with safety limits."""
-    import subprocess, tempfile, os, json, textwrap, sys, time
-    
-    code = args.get("code", "").strip()
-    if not code:
-        return {"error": "No code provided"}
-    
-    # Safety: block dangerous imports and operations
-    _BLOCKED_WORDS = [
-        "import os; os.system", "import subprocess", "import shutil",
-        "import socket", "import ctypes", "__import__('os')",
-        "breakpoint()", "__builtins__.__dict__", "sys.modules['os']",
-        "open('/dev", "open('/proc", "open('/sys",
-        "pty.spawn", "os.chmod", "os.chown",
-    ]
-    for word in _BLOCKED_WORDS:
-        if word in code:
-            return {"error": f"Blocked operation detected: {word[:40]}"}
-    
-    # Wrap code to prevent dangerous escapes
-    _SAFE_GLOBALS = {
-        "__builtins__": {
-            "print": print,
-            "len": len,
-            "range": range,
-            "int": int,
-            "float": float,
-            "str": str,
-            "bool": bool,
-            "list": list,
-            "dict": dict,
-            "tuple": tuple,
-            "set": set,
-            "type": type,
-            "isinstance": isinstance,
-            "hasattr": hasattr,
-            "getattr": getattr,
-            "setattr": setattr,
-            "True": True,
-            "False": False,
-            "None": None,
-            "Exception": Exception,
-            "ValueError": ValueError,
-            "TypeError": TypeError,
-            "KeyError": KeyError,
-            "IndexError": IndexError,
-            "sum": sum,
-            "abs": abs,
-            "min": min,
-            "max": max,
-            "round": round,
-            "sorted": sorted,
-            "reversed": reversed,
-            "enumerate": enumerate,
-            "zip": zip,
-            "map": map,
-            "filter": filter,
-            "any": any,
-            "all": all,
-            "open": open,
-            "json": __import__("json"),
-            "re": __import__("re"),
-            "math": __import__("math"),
-            "datetime": __import__("datetime"),
-            "collections": __import__("collections"),
-            "itertools": __import__("itertools"),
-            "functools": __import__("functools"),
-            "random": __import__("random"),
-            "pathlib": __import__("pathlib"),
-            "os": __import__("os"),
-            "sys": __import__("sys"),
-            "typing": __import__("typing"),
-               "copy": __import__("copy"),
-            "__import__": __import__,  # allows import statements
-        },
-    }
-    
-    stdout_cap = 50 * 1024  # 50KB
-    timeout = 295  # seconds (under 5min tool limit)
-    
-    try:
-        import io
-        old_stdout = sys.stdout
-        sys.stdout = buffer = io.StringIO()
-        start = time.time()
-        
-        try:
-            exec(code, _SAFE_GLOBALS)
-            elapsed = time.time() - start
-        except Exception as e:
-            elapsed = time.time() - start
-            return {
-                "error": str(e),
-                "output": buffer.getvalue()[:stdout_cap],
-                "elapsed_sec": round(elapsed, 2),
-            }
-        finally:
-            sys.stdout = old_stdout
-        
-        output = buffer.getvalue()
-        if len(output) > stdout_cap:
-            output = output[:stdout_cap] + f"\n... [truncated at {stdout_cap} bytes]"
-        
-        return {
-            "output": output,
-            "elapsed_sec": round(elapsed, 2),
-            "exit_code": 0,
-        }
-    except Exception as e:
-        return {"error": f"execute_code failed: {e}"}
-
-
-# ============ SubAgent 3 Tools ============
-# B.1.5: Real subprocess-based subagents (replaced SQLite fake impl)
-
-import threading as _subagent_threading
-import uuid as _subagent_uuid
-import time as _subagent_time
-from typing import Any as _SubAny
-
-_subagent_tasks: dict = {}  # task_id -> {status, goal, result?, started}
-_subagent_lock = _subagent_threading.Lock()
-
-
-def exec_delegate_task(args: dict) -> dict:
-    """Spawn a sub-agent process to handle a task asynchronously."""
-    try:
-        from tical_code.core.subagent_interface import SubAgentTask, run_subagent
-
-        task_desc = args.get("task", "")
-        context = args.get("context", "")
-        timeout = args.get("timeout", 120)
-
-        if not task_desc:
-            return {"error": "task is required"}
-
-        task_id = _subagent_uuid.uuid4().hex[:12]
-        now = _subagent_time.time()
-
-        with _subagent_lock:
-            _subagent_tasks[task_id] = {
-                "status": "running",
-                "goal": task_desc[:60],
-                "started": now,
-            }
-
-        # Background thread: run subagent, store result when done
-        def _worker(tid: str, t: _SubAny):
-            try:
-                result = run_subagent(t)
-                with _subagent_lock:
-                    _subagent_tasks[tid] = {
-                        "status": "done" if result.success else "error",
-                        "goal": t.goal[:60],
-                        "result": {
-                            "success": result.success,
-                            "output": result.output,
-                            "error": result.error,
-                            "tool_calls_made": result.tool_calls_made,
-                            "elapsed_sec": result.elapsed_sec,
-                        },
-                        "started": _subagent_tasks.get(tid, {}).get("started", _subagent_time.time()),
-                    }
-            except Exception as e:
-                with _subagent_lock:
-                    _subagent_tasks[tid] = {
-                        "status": "error",
-                        "goal": t.goal[:60] if hasattr(t, "goal") else "?",
-                        "result": {"error": str(e)},
-                        "started": _subagent_tasks.get(tid, {}).get("started", _subagent_time.time()),
-                    }
-
-        task = SubAgentTask(goal=task_desc, context=context, timeout_sec=timeout)
-        t = _subagent_threading.Thread(target=_worker, args=(task_id, task), daemon=True)
-        t.start()
-
-        return {"task_id": task_id, "status": "running"}
-    except Exception as e:
-        return {"error": f"Delegate failed: {e}"}
-
-
-def exec_subagent_result(args: dict) -> dict:
-    """Get result of a sub-agent task. Poll until status != running."""
-    try:
-        task_id = args.get("task_id", "")
-        if not task_id:
-            return {"error": "task_id is required"}
-
-        with _subagent_lock:
-            entry = _subagent_tasks.get(task_id)
-
-        if not entry:
-            return {"error": f"Task {task_id} not found", "status": "unknown"}
-
-        if entry["status"] == "running":
-            return {
-                "task_id": task_id,
-                "status": "running",
-                "goal": entry.get("goal", ""),
-            }
-
-        status = entry["status"]  # "done" or "error"
-        result = entry.get("result", {})
-        return {
-            "task_id": task_id,
-            "status": "completed" if status == "done" else "failed",
-            "success": bool(result.get("success")) if isinstance(result, dict) else False,
-            "output": result.get("output", "") if isinstance(result, dict) else str(result),
-            "error": result.get("error", "") if isinstance(result, dict) else "",
-            "tool_calls_made": result.get("tool_calls_made", 0) if isinstance(result, dict) else 0,
-        }
-    except Exception as e:
-        return {"error": f"Subagent result failed: {e}"}
-
-
-def exec_subagent_list(args: dict) -> dict:
-    """List all sub-agent tasks."""
-    try:
-        with _subagent_lock:
-            items = sorted(
-                _subagent_tasks.items(),
-                key=lambda x: x[1].get("started", 0),
-                reverse=True,
-            )
-            tasks = [
-                {
-                    "id": tid,
-                    "goal": info.get("goal", "")[:60],
-                    "status": info["status"],
-                }
-                for tid, info in items
-            ]
-        return {"tasks": tasks}
-    except Exception as e:
-        return {"error": f"Subagent list failed: {e}"}
-
-def exec_clarify_goal(args: dict) -> dict:
-    """Analyze a goal for ambiguity, missing info, or high risk."""
-    try:
-        from tical_code.core.clarify import ClarifyPhase
-        goal = args["goal"]
-        cp = ClarifyPhase()
-        result = cp.analyze_goal(goal)
-        if result.questions:
-            return {"clear": False, "issues": [q.to_dict() for q in result.questions]}
-        return {"clear": True}
-    except Exception as e:
-        return {"error": f"Clarify failed: {e}"}
-
-# ============ Cron 3 Tools ============
-
-_executor_cron = None
-
-def _get_cron():
-    global _executor_cron
-    if _executor_cron is None:
-        from tical_code.core.cron_scheduler import CronScheduler
-        _executor_cron = CronScheduler(data_dir=os.path.expanduser("~/.tical-code/cron_data"))
-    return _executor_cron
-
-def exec_cron_schedule(args: dict) -> dict:
-    """Schedule a recurring task."""
-    try:
-        schedule = args["schedule"]
-        task = args["task"]
-        name = args.get("name", "")
-        cr = _get_cron()
-        cron_task = cr.add_task(name=name, schedule=schedule, action=task)
-        return {"ok": True, "task_id": cron_task.id}
-    except Exception as e:
-        return {"error": f"Cron schedule failed: {e}"}
-
-def exec_cron_list(args: dict) -> dict:
-    """List all scheduled cron tasks."""
-    try:
-        cr = _get_cron()
-        tasks = cr.list_tasks()
-        return {"tasks": [{"id": t.id, "schedule": t.schedule, "name": t.name, "action": t.action} for t in tasks]}
-    except Exception as e:
-        return {"error": f"Cron list failed: {e}"}
-
-def exec_cron_cancel(args: dict) -> dict:
-    """Cancel a scheduled cron task."""
-    try:
-        task_id = args["task_id"]
-        cr = _get_cron()
-        ok = cr.remove_task(task_id)
-        if ok:
-            return {"ok": True, "task_id": task_id}
-        return {"error": f"Task {task_id} not found"}
-    except Exception as e:
-        return {"error": f"Cron cancel failed: {e}"}
-
-
-def exec_xurl_post(args):
-    import asyncio
-    try:
-        from tical_code.plugins.xurl import XUrlPlugin
-        xp = XUrlPlugin()
-        result = asyncio.run(xp.post_tweet(args))
-        if result.success:
-            return {"ok": True, "data": result.data, "text": str(args.get("text", ""))[:50]}
-        return {"error": result.error or "post_tweet failed"}
-    except Exception as e:
-        return {"error": "xurl_post: " + str(e)}
-
-def exec_xurl_reply(args):
-    import asyncio
-    try:
-        from tical_code.plugins.xurl import XUrlPlugin
-        xp = XUrlPlugin()
-        result = asyncio.run(xp.reply_tweet(args))
-        if result.success:
-            return {"ok": True, "data": result.data}
-        return {"error": result.error or "reply_tweet failed"}
-    except Exception as e:
-        return {"error": "xurl_reply: " + str(e)}
-
-def exec_xurl_timeline(args):
-    import asyncio
-    try:
-        from tical_code.plugins.xurl import XUrlPlugin
-        xp = XUrlPlugin()
-        result = asyncio.run(xp.get_timeline(args))
-        if result.success:
-            return {"ok": True, "data": result.data, "tweets": result.data.get("tweets", [])}
-        return {"error": result.error or "get_timeline failed"}
-    except Exception as e:
-        return {"error": "xurl_timeline: " + str(e)}
-
-def exec_web_search(args):
-    """Search the internet for information."""
-    import asyncio
-    try:
-        from tical_code.plugins.search_plugin import SearchPlugin
-        sp = SearchPlugin()
-        loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(sp.web_search(args))
-        loop.close()
-        if result.success:
-            return {"ok": True, "data": result.data, "results": result.data.get("results", [])}
-        return {"error": result.error or "web_search failed"}
-    except ImportError:
-        return {"error": "Search plugin not available"}
-    except Exception as e:
-        return {"error": "web_search: " + str(e)}
-
-
-# ============ Browser-based X/Twitter Tools (CDP, no API cost) ============
-
-def exec_xurl_browser_post(args):
-    """Post tweet via CDP browser. No API key needed. Requires logged-in Chrome session on X.com."""
-    import asyncio
-    try:
-        text = args.get("text", "")
-        if not text:
-            return {"error": "text required"}
-        if len(text) > 280:
-            text = text[:280]
-
-        bc = _get_browser()
-        asyncio.run(bc.navigate("https://x.com/compose/post"))
-        asyncio.run(asyncio.sleep(3))
-
-        # Click the tweet compose area and type
-        asyncio.run(bc._conn.send("Runtime.evaluate", {
-            "expression": """
-            (() => {
-                const el = document.querySelector('[data-testid="tweetTextarea_0"]');
-                if (!el) return 'no compose box';
-                el.focus();
-                el.innerText = el.innerText;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                return 'focused';
-            })();
-            """,
-            "returnByValue": True,
-        }))
-        asyncio.run(asyncio.sleep(1))
-
-        # Type the tweet text via CDP Input.insertText
-        awaitable = bc._conn.send("Input.insertText", {"text": text})
-        asyncio.run(awaitable)
-        asyncio.run(asyncio.sleep(1))
-
-        # Click Post button
-        asyncio.run(bc._conn.send("Runtime.evaluate", {
-            "expression": """
-            (() => {
-                const btn = document.querySelector('[data-testid="tweetButtonInline"]');
-                if (!btn) return 'no post button';
-                btn.click();
-                return 'posted';
-            })();
-            """,
-            "returnByValue": True,
-        }))
-        asyncio.run(asyncio.sleep(2))
-
-        return {"ok": True, "text": text[:50], "method": "browser"}
-    except Exception as e:
-        return {"error": f"browser_post: {e}"}
-
-
-def exec_xurl_browser_reply(args):
-    """Reply to tweet via CDP browser. No API key needed."""
-    import asyncio
-    try:
-        tweet_url = args.get("tweet_url", "")
-        text = args.get("text", "")
-        if not tweet_url or not text:
-            return {"error": "tweet_url and text required"}
-        if len(text) > 280:
-            text = text[:280]
-
-        bc = _get_browser()
-        asyncio.run(bc.navigate(tweet_url))
-        asyncio.run(asyncio.sleep(2))
-
-        # Click reply button
-        asyncio.run(bc._conn.send("Runtime.evaluate", {
-            "expression": """
-            (() => {
-                const btn = document.querySelector('[data-testid="reply"]');
-                if (!btn) return 'no reply button';
-                btn.click();
-                return 'reply_clicked';
-            })();
-            """,
-            "returnByValue": True,
-        }))
-        asyncio.run(asyncio.sleep(1))
-
-        # Type reply text
-        awaitable = bc._conn.send("Input.insertText", {"text": text})
-        asyncio.run(awaitable)
-        asyncio.run(asyncio.sleep(1))
-
-        # Click reply post button
-        asyncio.run(bc._conn.send("Runtime.evaluate", {
-            "expression": """
-            (() => {
-                const btn = document.querySelector('[data-testid="tweetButton"]');
-                if (!btn) return 'no post button';
-                btn.click();
-                return 'replied';
-            })();
-            """,
-            "returnByValue": True,
-        }))
-        asyncio.run(asyncio.sleep(2))
-
-        return {"ok": True, "text": text[:50], "method": "browser"}
-    except Exception as e:
-        return {"error": f"browser_reply: {e}"}
-
-
-def exec_xurl_browser_inject_cookies(args):
-    """Inject X.com cookies into CDP browser session to restore login."""
-    import asyncio, json
-    try:
-        cookies_raw = args.get("cookies_json", "")
-        if not cookies_raw:
-            return {"error": "cookies_json required"}
-        cookies = json.loads(cookies_raw) if isinstance(cookies_raw, str) else cookies_raw
-        if not isinstance(cookies, list):
-            cookies = [cookies]
-
-        bc = _get_browser()
-        asyncio.run(bc.navigate("https://x.com"))
-        asyncio.run(asyncio.sleep(2))
-
-        for c in cookies:
-            cdp_cookie = {
-                "name": c.get("name", c.get("key", "")),
-                "value": c.get("value", ""),
-                "domain": c.get("domain", ".x.com"),
-                "path": c.get("path", "/"),
-                "httpOnly": c.get("httpOnly", True),
-                "secure": c.get("secure", True),
-            }
-            if "sameSite" in c:
-                cdp_cookie["sameSite"] = c["sameSite"]
-            if "expirationDate" in c:
-                cdp_cookie["expires"] = c["expirationDate"]
-            elif "expiry" in c:
-                cdp_cookie["expires"] = c["expiry"]
-            asyncio.run(bc._conn.send("Network.setCookie", cdp_cookie))
-
-        asyncio.run(asyncio.sleep(1))
-        asyncio.run(bc.navigate("https://x.com/home"))
-        asyncio.run(asyncio.sleep(3))
-
-        title = asyncio.run(bc.get_title())
-        url = asyncio.run(bc.get_url())
-        logged_in = "login" not in url.lower() and "x.com/home" in url
-
-        return {
-            "ok": logged_in,
-            "cookies_injected": len(cookies),
-            "logged_in": logged_in,
-            "title": title, "url": url,
-            "tip": "Call xurl_browser_timeline to read feed, xurl_browser_post to tweet"
-        }
-    except Exception as e:
-        return {"error": f"inject_cookies: {e}"}
-
-
-def exec_xurl_browser_timeline(args):
-    """Read X home timeline via CDP browser."""
-    import asyncio, json
-    try:
-        bc = _get_browser()
-        asyncio.run(bc.navigate("https://x.com/home"))
-        asyncio.run(asyncio.sleep(3))
-
-        asyncio.run(bc._conn.send("Runtime.evaluate", {
-            "expression": "window.scrollBy(0, 800)",
-            "returnByValue": True,
-        }))
-        asyncio.run(asyncio.sleep(2))
-
-        js = """
-        (() => {
-            const tweets = [];
-            const articles = document.querySelectorAll('article[data-testid="tweet"]');
-            articles.forEach((a, i) => {
-                const textEl = a.querySelector('[data-testid="tweetText"]');
-                const timeEl = a.querySelector('time');
-                const linkEl = a.querySelector('a[href*="/status/"]');
-                const nameEl = a.querySelector('[data-testid="User-Name"]');
-                tweets.push({
-                    index: i,
-                    text: textEl ? textEl.textContent.slice(0, 200) : '',
-                    time: timeEl ? timeEl.getAttribute('datetime') : '',
-                    url: linkEl ? 'https://x.com' + linkEl.getAttribute('href') : '',
-                    author: nameEl ? nameEl.textContent.slice(0, 60) : '',
-                });
-            });
-            return JSON.stringify(tweets);
-        })();
-        """
-        result = asyncio.run(bc._conn.send("Runtime.evaluate", {
-            "expression": js,
-            "returnByValue": True,
-        }))
-        raw = result.get("result", {}).get("value", "[]")
-        tweets = json.loads(raw) if isinstance(raw, str) else raw
-        return {"ok": True, "tweets": tweets, "count": len(tweets)}
-    except Exception as e:
-        return {"error": f"browser_timeline: {e}"}
-
-
-def exec_anchor_ping(args):
-    """Register heartbeat to live anchor server."""
-    import json, urllib.request
-    try:
-        name = os.environ.get("WORKER_NAME", "unknown")
-        hostname = __import__("os").uname().nodename
-        status = args.get("status", "online")
-        payload = json.dumps({"name": name, "hostname": hostname, "status": status}).encode()
-        anchor_url = os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        req = urllib.request.Request(
-            anchor_url, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read())
-        return {"ok": True, "name": name}
-    except Exception as e:
-        return {"error": f"anchor_ping: {e}"}
-
-
-def exec_anchor_list(args):
-    """List all agents from live anchor."""
-    import json, urllib.request
-    try:
-        anchor_url = os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        req = urllib.request.Request(anchor_url)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        vps = data.get("vps", {})
-        agents = [{"name": n, "ip": i.get("ip",""), "alive": i.get("alive",False),
-                    "last_seen": i.get("last_seen_human",""), "system": i.get("system","")}
-                  for n, i in vps.items()]
-        return {"ok": True, "agents": agents, "live": data.get("_live", {})}
-    except Exception as e:
-        return {"error": f"anchor_list: {e}"}
-
-
-def exec_anchor_task_enqueue(args):
-    """Enqueue a task for a worker. Target 'any' = first available picks it up."""
-    import json, urllib.request, os as _os
-    try:
-        target = args.get("target", "any")
-        task = args.get("task", "")
-        sender = args.get("sender", _os.environ.get("WORKER_NAME", "unknown"))
-        if not task:
-            return {"error": "task required"}
-        payload = json.dumps({"target": target, "task": task, "sender": sender}).encode()
-        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/enqueue", data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        return {"error": f"task_enqueue: {e}"}
-
-
-def exec_anchor_task_dequeue(args):
-    """Pick up the next queued task."""
-    import json, urllib.request, os as _os
-    try:
-        worker = args.get("worker", _os.environ.get("WORKER_NAME", ""))
-        if not worker:
-            return {"error": "worker required"}
-        payload = json.dumps({"worker": worker}).encode()
-        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/dequeue", data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        return {"error": f"task_dequeue: {e}"}
-
-
-def exec_anchor_task_complete(args):
-    """Mark a task done/failed."""
-    import json, urllib.request, os as _os
-    try:
-        task_id = args.get("task_id", 0)
-        result = args.get("result", "")
-        status = args.get("status", "done")
-        payload = json.dumps({"task_id": task_id, "result": result, "status": status}).encode()
-        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/complete", data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        return {"error": f"task_complete: {e}"}
-
-
-def exec_anchor_task_list(args):
-    """List all tasks."""
-    import json, urllib.request, os as _os
-    try:
-        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        req = urllib.request.Request(f"{anchor_url.rstrip('/')}/task/list")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        return {"error": f"task_list: {e}"}
-
-
-def exec_anchor_report(args):
-    """Report task completion + git commit for persistence."""
-    import json, urllib.request, subprocess, os as _os
-    try:
-        name = _os.environ.get("WORKER_NAME", "unknown")
-        task = args.get("current_task", "unknown")
-        result = args.get("result", "")
-        task_type = args.get("task_type", "")
-
-        # 1. Send to anchor server
-        payload = json.dumps({
-            "name": name, "status": "idle",
-            "current_task": task, "task_type": task_type,
-            "result": result, "progress": "done",
-        }).encode()
-        anchor_url = _os.environ.get("ANCHOR_URL", "https://bench.ticalasi.com/anchor")
-        req = urllib.request.Request(anchor_url, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            anchor_result = json.loads(resp.read())
-
-        # 2. Git commit for persistence (work dir)
-        work_dir = _os.environ.get("TICOBOT_DIR", "")
-        if work_dir:
-            try:
-                subprocess.run(
-                    ["git", "-C", work_dir, "commit", "--allow-empty",
-                     "-m", f"[{name}] {task_type}: {task[:60]}"],
-                    capture_output=True, timeout=10,
-                )
-            except Exception:
-                pass
-
-        return {"ok": True, "name": name, "task": task, "anchor": anchor_result}
-    except Exception as e:
-        return {"error": f"anchor_report: {e}"}
-
-
-# ============ Secret Redaction ============
-
-_DEFAULT_REDACTION_PATTERNS = [
-    ("api_key_openai", re.compile(r'sk-[a-zA-Z0-9]{20,}')),
-    ("api_key_google", re.compile(r'AIza[a-zA-Z0-9_-]{35}')),
-    ("api_key_generic", re.compile(r'["\']?api[_-]?key["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{20,})["\']?', re.IGNORECASE)),
-    ("token_github", re.compile(r'ghp_[a-zA-Z0-9]{36}')),
-    ("token_gitlab", re.compile(r'glpat-[a-zA-Z0-9\-]{20,}')),
-    ("password", re.compile(r'(?:password|passwd|pwd)\s*[:=]\s*\S+', re.IGNORECASE)),
-    ("private_key", re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----')),
-    ("connection_mongodb", re.compile(r'mongodb://[^:\s]+:[^@\s]+@')),
-    ("connection_postgres", re.compile(r'postgres(?:ql)?://[^:\s]+:[^@\s]+@', re.IGNORECASE)),
-    ("connection_mysql", re.compile(r'mysql://[^:\s]+:[^@\s]+@')),
-    ("connection_redis", re.compile(r'redis://:[^@\s]+@')),
-    ("aws_access_key", re.compile(r'AKIA[0-9A-Z]{16}')),
-    ("aws_secret_key", re.compile(r'["\']?aws[_-]?secret[_-]?access[_-]?key["\']?\s*[:=]\s*["\']?[A-Za-z0-9/+=]{40}["\']?', re.IGNORECASE)),
-    ("bearer_token", re.compile(r'Bearer\s+[a-zA-Z0-9_\-\.]{20,}', re.IGNORECASE)),
-]
-
-def redact_secrets(text: str) -> str:
-    """Redact API keys, tokens, passwords from text for safe logging."""
-    if not text:
-        return text
-    result = text
-    for type_name, pattern in _DEFAULT_REDACTION_PATTERNS:
-        result = pattern.sub(f"[REDACTED_{type_name}]", result)
-    return result
-
-
-# ============ FTS Memory 1 Tool ============
-
-_executor_fts = None
-
-def _get_fts():
-    global _executor_fts
-    if _executor_fts is None:
-        from tical_code.core.memory_store import MemoryFTSStore
-        _executor_fts = MemoryFTSStore(
-            memory_dir=os.path.expanduser("~/.tical-code/memory"),
-            db_path=os.path.expanduser("~/.tical-code/fts_memory.db"))
-    return _executor_fts
-
-def exec_memory_fts_search(args: dict) -> dict:
-    """Full-text search across all persistent memory."""
-    try:
-        query = args["query"]
-        limit = min(int(args.get("top_k", 10)), 50)
-        fts = _get_fts()
-        results = fts.search(query=query, limit=limit)
-        return {"results": results, "total": len(results)}
-    except Exception as e:
-        return {"error": f"FTS search failed: {e}"}
-
-# ============ Dispatcher ============
+# ============ 分发器 ============
 
 def execute(name: str, args: dict, base_dir: str = "") -> dict:
-    """Unified dispatch entry. name -> exec_* function."""
+    """统一分发入口。name → _exec_* 函数。
+
+    Args:
+        name: 工具名（bash, file_read, chat_send...）
+        args: 参数字典
+        base_dir: 可选，工作目录（默认 WORKSPACE）
+
+    Returns:
+        统一结果字典
+    """
     logger.info(f"[executor] {name}({str(args)[:80]})")
     dispatch = {
         "bash": exec_bash,
-        "xurl_post": exec_xurl_post,
-        "xurl_reply": exec_xurl_reply,
-        "xurl_timeline": exec_xurl_timeline,
-        "xurl_browser_post": exec_xurl_browser_post,
-        "xurl_browser_reply": exec_xurl_browser_reply,
-        "xurl_browser_inject_cookies": exec_xurl_browser_inject_cookies,
-        "xurl_browser_timeline": exec_xurl_browser_timeline,
-        "anchor_ping": exec_anchor_ping,
-        "anchor_list": exec_anchor_list,
-        "anchor_report": exec_anchor_report,
-        "anchor_task_enqueue": exec_anchor_task_enqueue,
-        "anchor_task_dequeue": exec_anchor_task_dequeue,
-        "anchor_task_complete": exec_anchor_task_complete,
-        "anchor_task_list": exec_anchor_task_list,
-        "web_search": exec_web_search,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
-        "memory": lambda a: exec_memory(a, base_dir),
-        "memory_list": lambda a: exec_memory_list(a, base_dir),
-        "memory_save": lambda a: exec_memory(a, base_dir),  # backward compat
-        "memory_load": lambda a: exec_memory_list(a, base_dir),  # backward compat
+        "memory_save": lambda a: exec_memory_save(a, base_dir),
+        "memory_load": lambda a: exec_memory_load(a, base_dir),
         "state_save": lambda a: exec_state_save(a, base_dir),
+        # conv_search removed
         "chat_send": exec_chat_send,
-        "web_fetch": exec_web_fetch,
-        "analyze_image": exec_analyze_image,
-        "ocr": exec_ocr,
-        "patch_file": exec_patch_file,
-        "browser_navigate": exec_browser_navigate,
-        "browser_click": exec_browser_click,
-        "browser_screenshot": exec_browser_screenshot,
-        "browser_extract": exec_browser_extract,
-        "delegate_task": exec_delegate_task,
-        "subagent_result": exec_subagent_result,
-        "subagent_list": exec_subagent_list,
-        "clarify_goal": exec_clarify_goal,
-        "cron_schedule": exec_cron_schedule,
-        "cron_list": exec_cron_list,
-        "cron_cancel": exec_cron_cancel,
-        "cloud_device.navigate": exec_cloud_navigate,
-        "cloud_device.click": exec_cloud_click,
-        "cloud_device.type": exec_cloud_type,
-        "cloud_device.screenshot": exec_cloud_screenshot,
-        "cloud_device.extract": exec_cloud_extract,
-        "cloud_device.disconnect": exec_cloud_disconnect,
-        "switch_model": exec_switch_model,
-        "list_models": exec_list_models,
-        "self_restart": exec_self_restart,
-        "execute_code": exec_execute_code,
-        "memory_fts_search": exec_memory_fts_search,
     }
     handler = dispatch.get(name)
     if not handler:
-        # Try with dots restored (API sends __ for dots)
-        normalized = name.replace("__", ".")
-        handler = dispatch.get(normalized)
-    if not handler:
+        logger.error(f"[executor] Unknown tool called: {name}")
         return {"error": f"Unknown tool: {name}"}
 
     try:
@@ -2351,3 +419,20 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
     except Exception as e:
         logger.error(f"[executor] {name} exception: {e}")
         return {"error": str(e)}
+
+
+class ToolExecutor:
+    """Object-oriented wrapper for tool execution.
+
+    Provides instance-based interface for EITE-benchmark compatibility.
+    Delegates to module-level execute() function.
+    """
+    def __init__(self):
+        self.logger = logging.getLogger("tical-code.executor")
+
+    def execute(self, name: str, args: dict, base_dir: str = "") -> dict:
+        """Execute a tool by name. Validates args, enforces timeout, logs errors."""
+        if not isinstance(name, str) or not isinstance(args, dict):
+            self.logger.error(f"Invalid arguments: name={type(name).__name__}, args={type(args).__name__}")
+            return {"error": "invalid_arguments"}
+        return execute(name, args, base_dir)
