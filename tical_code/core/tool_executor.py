@@ -242,6 +242,15 @@ for s in TOOL_SCHEMAS:
     TOOL_SCHEMAS_CLEAN.append(s_copy)
 
 
+def redact_secrets(text: str) -> str:
+    """Mask common secret patterns (API keys, tokens) in text for safe logging."""
+    import re
+    text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', r'sk-***REDACTED***', text)
+    text = re.sub(r'(ghp_[a-zA-Z0-9]{36})', r'ghp_***REDACTED***', text)
+    text = re.sub(r'(\d{8,}:AA[a-zA-Z0-9_-]{35,})', r'***BOT_TOKEN_REDACTED***', text)
+    return text
+
+
 # ═══════════════════════════════════════════════════════════════
 # 处理器实现
 # ═══════════════════════════════════════════════════════════════
