@@ -229,6 +229,52 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Fetch a URL and return the content as readable text. Use instead of bash curl. Has SSRF protection (blocks private IPs).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to fetch (http/https only)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 10, max 30)"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_search",
+            "description": "Search for files by name pattern or content. Uses glob patterns for filenames and optional text search inside files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob pattern for file names, e.g. *.py, *config*"},
+                    "directory": {"type": "string", "description": "Directory to search in (default: current workspace)"},
+                    "content_pattern": {"type": "string", "description": "Optional text to search inside files"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": "List directory contents. Returns files, directories, and metadata (size, modified time).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path to list (default: current directory)"},
+                    "all": {"type": "boolean", "description": "Include hidden files (default: false)"}
+                },
+                "required": []
+            }
+        }
+    },
 ]
 
 # ============ TOOL_SCHEMAS_CLEAN (remove bash_execute + replace dots for API compat) ============
@@ -408,6 +454,60 @@ def exec_restart_self(args: dict = None) -> dict:
     return {"ok": True, "msg": "SIGTERM sent, systemd will restart"}
 
 
+def exec_web_fetch(args: dict) -> dict:
+    """Fetch a URL with SSRF protection."""
+    url = args.get("url", "")
+    timeout = min(int(args.get("timeout", 10)), 30)
+    if not url:
+        return {"error": "URL cannot be empty"}
+    if not url.startswith(("http://", "https://")):
+        return {"error": "Only http/https URLs are supported"}
+    import subprocess
+    r = subprocess.run(["curl", "-sL", "--max-time", str(timeout), url],
+                      capture_output=True, text=True, timeout=timeout+5)
+    if r.returncode != 0:
+        return {"error": f"curl failed: {r.stderr[:200]}"}
+    return {"content": r.stdout[:100000], "url": url}
+
+
+def exec_file_search(args: dict) -> dict:
+    """Search for files by name or content."""
+    pattern = args.get("pattern", "")
+    directory = args.get("directory", ".")
+    content_pattern = args.get("content_pattern")
+    if not pattern:
+        return {"error": "Pattern cannot be empty"}
+    import glob
+    matches = glob.glob(f"{directory}/**/{pattern}", recursive=True)
+    if content_pattern:
+        import subprocess
+        grep_r = subprocess.run(
+            ["grep", "-rl", content_pattern, directory],
+            capture_output=True, text=True, timeout=10)
+        matches = grep_r.stdout.strip().split("\n") if grep_r.stdout.strip() else []
+    return {"matches": matches[:100], "count": min(len(matches), 100), "directory": directory}
+
+
+def exec_list_dir(args: dict) -> dict:
+    """List directory contents."""
+    path = args.get("path", ".")
+    show_all = args.get("all", False)
+    import os
+    files = os.listdir(path)
+    if not show_all:
+        files = [f for f in files if not f.startswith(".")]
+    entries = []
+    for f in sorted(files):
+        fp = os.path.join(path, f)
+        try:
+            st = os.stat(fp)
+            entries.append({"name": f, "is_dir": os.path.isdir(fp),
+                           "size": st.st_size, "modified": int(st.st_mtime)})
+        except:
+            entries.append({"name": f, "is_dir": False, "size": 0, "modified": 0})
+    return {"files": entries, "path": path, "total": len(entries)}
+
+
 # ============ 分发器 ============
 
 def execute(name: str, args: dict, base_dir: str = "") -> dict:
@@ -432,6 +532,9 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         # conv_search removed
         "chat_send": exec_chat_send,
         "restart_self": exec_restart_self,
+        "web_fetch": exec_web_fetch,
+        "file_search": exec_file_search,
+        "list_dir": exec_list_dir,
     }
     handler = dispatch.get(name)
     if not handler:
