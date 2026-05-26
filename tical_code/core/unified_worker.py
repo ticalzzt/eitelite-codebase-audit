@@ -725,7 +725,12 @@ All other messages enter the LLM conversation loop.
         )
 
         # === [CMD] Protocol — direct execution (no LLM) ===
-        if msg.content.strip().startswith("[CMD]"):
+        # Supports both half-width [CMD] and full-width ［CMD］
+        _content_stripped = msg.content.strip()
+        if _content_stripped.startswith("[CMD]") or _content_stripped.startswith("［CMD］"):
+            # Normalize full-width brackets to half-width for parsing
+            if _content_stripped.startswith("［CMD］"):
+                msg.content = _content_stripped.replace("［", "[").replace("］", "]")
             self._handle_cmd(msg, channel)
             return
 
