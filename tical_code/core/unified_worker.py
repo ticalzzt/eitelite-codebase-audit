@@ -28,6 +28,7 @@ from tical_code.core.modules.loop_detector import LoopDetector
 from tical_code.core.modules.truthful_reporter import TruthfulReporter
 from tical_code.core.modules.proposal_gate import ProposalGate
 from tical_code.core.usage import UsageTracker
+from tical_code.core.trace_recorder import TraceRecorder
 from tical_code.vigil import build_vigil, NewInstruction
 
 # Known AI worker names — used to detect worker-to-worker messages
@@ -93,6 +94,13 @@ class Worker:
 
         # Usage tracking
         self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
+        
+        # TraceRecorder - 0号模型训练数据采集
+        dc = cfg.get("data_collection", {})
+        self.tracer = TraceRecorder(system_name=cfg.get('name', 'eitelite'), enabled=dc.get('enabled', False))
+        if dc.get('enabled'):
+            import logging as _lg
+            _lg.getLogger("tical-code.trace").info('TraceRecorder active -> %s' % dc.get('target_url', ''))
         
         # CDP browser config - set env for tool_executor to pick up
         cdp_url = cfg.get("cdp_url", "")
@@ -506,6 +514,10 @@ All other messages enter the LLM conversation loop.
         # Reset EITE session tracking for this turn
         if hasattr(self, "eite") and self.eite:
             self.eite.reset_session()
+        
+        # TraceRecorder: task start
+        if hasattr(self, 'tracer') and self.tracer.enabled:
+            self.tracer.on_task_start(f"{msg.source}_{msg.sender}_{int(time.time())}", msg.content[:200])
 
         # Process through LLM + tools
         self._process(channel, msg)
@@ -642,6 +654,9 @@ All other messages enter the LLM conversation loop.
                     if hasattr(self, "eite") and self.eite:
                         result = self.eite.verify_tool_result(name, args, result)
                         logger.info(f"  verify {name}: {result.get('verified')} ({result.get('verify_detail', '')})")
+                        # TraceRecorder: record tool result
+                        if hasattr(self, 'tracer') and self.tracer.enabled:
+                            self.tracer.on_tool_result(name, args, result, result.get("verified", False))
                         if not result.get("verified"):
                             # Only count SAFETY blocks as deadlock candidates,
                             # not regular execution failures (exit_code != 0)
@@ -764,6 +779,10 @@ All other messages enter the LLM conversation loop.
             else:
                 # Text response
                 reply = content or "[worker] no response"
+                
+                # TraceRecorder: task end
+                if hasattr(self, 'tracer') and self.tracer.enabled:
+                    self.tracer.on_task_end(success=not self._task_errored)
 
                 # Check if this confirms a pending proposal
                 pending_action = self.gate.get_pending_action()
