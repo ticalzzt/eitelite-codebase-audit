@@ -54,6 +54,37 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 pass
         return {"version": "unknown"}
     
+    def _count_py_files(self, root_dir: str) -> dict:
+        """动态统计: 扫描目录下的 .py 文件数和代码行数"""
+        import subprocess as _sp
+        d = Path(root_dir)
+        if not d.exists():
+            return {"py_files": 0, "py_lines": 0, "path": root_dir, "status": "not_found"}
+        try:
+            r = _sp.run(
+                ["find", str(d), "-name", "*.py", "-not", "-path", "*/__pycache__/*",
+                 "-not", "-path", "*/.git/*", "-not", "-path", "*/training_data/*"],
+                capture_output=True, text=True, timeout=30
+            )
+            files = [f for f in r.stdout.strip().split("\n") if f.strip()]
+            total_lines = 0
+            for f in files:
+                try:
+                    total_lines += len(Path(f).read_text().split("\n"))
+                except:
+                    pass
+            return {"py_files": len(files), "py_lines": total_lines,
+                    "path": str(d), "status": "ok"}
+        except Exception as e:
+            return {"py_files": 0, "py_lines": 0, "path": root_dir, "status": f"error: {e}"}
+    
+    def _get_systems(self) -> dict:
+        """实时统计两个系统的代码量"""
+        return {
+            "eitelite": self._count_py_files("/home/ubuntu/eitelite"),
+            "tical-code": self._count_py_files("/home/ubuntu/tical-code"),
+        }
+    
     def _worker_list(self) -> dict:
         """返回兄弟节点工作状态 (用于 _anchor_api('anchor/work'))"""
         with state_lock:
@@ -96,6 +127,10 @@ class AnchorHandler(BaseHTTPRequestHandler):
         if path == "/task/list":
             with task_lock:
                 return self._send_json({"tasks": list(task_queue)})
+        
+        # /systems → 动态统计两个系统的代码量
+        if path == "/systems":
+            return self._send_json(self._get_systems())
         
         self._send_json({"error": "not_found"}, 404)
     

@@ -116,7 +116,7 @@ def build_system_prompt(
         "  you MUST read the 'systems' section from the anchor (ops-anchor.json) and report those numbers.",
         "  The anchor contains verified metadata: py_files, py_lines, modules, deployed_on.",
         "  Do NOT fabricate these numbers from your training knowledge — they are always wrong.",
-        "  To read: GET https://bench.ticalasi.com/anchor/ → systems → eitelite / tical-code",
+        "  To read: GET https://bench.ticalasi.com/anchor/systems (动态统计, 不是硬编码)",
         "- Identity: anti-impersonation rules enforced, fingerprint verification",
         "- Channels: Telegram + tical-chat dual-channel",
         "- Anti-loop: loop_detector with stagnation/arg_drift detection",
