@@ -79,11 +79,34 @@ class AnchorHandler(BaseHTTPRequestHandler):
             return {"py_files": 0, "py_lines": 0, "path": root_dir, "status": f"error: {e}"}
     
     def _get_systems(self) -> dict:
-        """实时统计两个系统的代码量"""
-        return {
-            "eitelite": self._count_py_files("/home/ubuntu/eitelite"),
-            "tical-code": self._count_py_files("/home/ubuntu/tical-code"),
-        }
+        """实时统计两个系统的代码量。本地没有时 git clone 来统计"""
+        eite = self._count_py_files("/home/ubuntu/eitelite")
+        tical = self._count_py_files("/home/ubuntu/tical-code")
+        # eitelite 不完整 → 临时 clone 来统计
+        if eite.get("py_files", 0) < 10:
+            try:
+                import subprocess as _sp, tempfile
+                tmp = tempfile.mkdtemp(prefix="eite_count_")
+                _sp.run(["git", "clone", "--depth", "1",
+                    "https://github.com/ticalzzt/eitelite-codebase-audit.git",
+                    tmp + "/eitelite"], capture_output=True, timeout=60)
+                eite = self._count_py_files(tmp + "/eitelite")
+                _sp.run(["rm", "-rf", tmp], capture_output=True)
+            except:
+                pass
+        # tical-code 不完整 → 同上
+        if tical.get("py_files", 0) < 10:
+            try:
+                import subprocess as _sp, tempfile
+                tmp = tempfile.mkdtemp(prefix="tical_count_")
+                _sp.run(["git", "clone", "--depth", "1",
+                    "https://github.com/ticalzzt/tical-code.git",
+                    tmp + "/tical-code"], capture_output=True, timeout=60)
+                tical = self._count_py_files(tmp + "/tical-code")
+                _sp.run(["rm", "-rf", tmp], capture_output=True)
+            except:
+                pass
+        return {"eitelite": eite, "tical-code": tical}
     
     def _worker_list(self) -> dict:
         """返回兄弟节点工作状态 (用于 _anchor_api('anchor/work'))"""
