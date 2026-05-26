@@ -231,9 +231,20 @@ TOOL_SCHEMAS = [
     },
 ]
 
+# ============ TOOL_SCHEMAS_CLEAN (remove bash_execute + replace dots for API compat) ============
+
+TOOL_SCHEMAS_CLEAN = []
+for s in TOOL_SCHEMAS:
+    if s["function"]["name"] == "bash_execute":
+        continue
+    s_copy = json.loads(json.dumps(s))
+    s_copy["function"]["name"] = s_copy["function"]["name"].replace(".", "__")
+    TOOL_SCHEMAS_CLEAN.append(s_copy)
 
 
-
+# ═══════════════════════════════════════════════════════════════
+# 处理器实现
+# ═══════════════════════════════════════════════════════════════
 def exec_bash(args: dict) -> dict:
     cmd = args.get("command", "")
     if not cmd:
