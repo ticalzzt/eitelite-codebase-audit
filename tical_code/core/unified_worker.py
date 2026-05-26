@@ -666,6 +666,66 @@ class Worker:
                         return _resp.read().decode("utf-8")[:3000]
                 except Exception as e:
                     return f"[CMD] log export error: {e}"
+            elif len(cmd_args) == 1 and cmd_args[0] == "tags":
+                # [CMD] log tags → list all tags
+                _url = f"{_chat_url}/v1/tags"
+            elif len(cmd_args) >= 2 and cmd_args[0] == "classify":
+                # [CMD] log classify [limit] → classify unclassified messages using LLM
+                _limit = int(cmd_args[1]) if len(cmd_args) >= 2 and cmd_args[1].isdigit() else 10
+                # Fetch unclassified messages
+                try:
+                    _url = f"{_chat_url}/v1/messages/unclassified?limit={_limit}"
+                    _req = urllib.request.Request(_url)
+                    _req.add_header("X-AI-Key", _key)
+                    with urllib.request.urlopen(_req, timeout=15) as _resp:
+                        _unclassified = _json.loads(_resp.read())
+                except Exception as e:
+                    return f"[CMD] log classify fetch error: {e}"
+
+                if not _unclassified.get("messages"):
+                    return "[CMD] log classify: no unclassified messages found"
+
+                _classified = 0
+                _results = []
+                for _m in _unclassified["messages"]:
+                    _mid = _m["id"]
+                    _content = _m["content"][:500]
+                    try:
+                        _prompt = (
+                            "Classify this message from an AI management conversation.\n"
+                            "Pick relevant categories from: 问题, 修复, 决策, 任务, 技术方案, 配置, 部署, 查询, 通知, 审计\n"
+                            f"Message: {_content}\n\n"
+                            "Respond with valid JSON ONLY: "
+                            '{"tags": ["问题"], "summary": "one line summary in Chinese (max 60 chars)"}'
+                        )
+                        _conv = [{"role": "user", "content": _prompt}]
+                        _resp = self.llm.chat(_conv)
+                        _text = _resp.content.strip()
+                        # Extract JSON from response
+                        import re as _re
+                        _json_match = _re.search(r'\{.*\}', _text, _re.DOTALL)
+                        if _json_match:
+                            _parsed = _json.loads(_json_match.group())
+                            _tag_list = _parsed.get("tags", [])
+                            _summary = _parsed.get("summary", "")
+                            # Write tags back
+                            _tag_req = urllib.request.Request(
+                                f"{_chat_url}/v1/messages/tag",
+                                data=_json.dumps({"id": _mid, "tags": _tag_list, "summary": _summary}).encode(),
+                                headers={"Content-Type": "application/json", "X-AI-Key": _key},
+                                method="POST",
+                            )
+                            with urllib.request.urlopen(_tag_req, timeout=10):
+                                _classified += 1
+                                _results.append(f"  #{_mid}: {', '.join(_tag_list)} — {_summary[:40]}")
+                    except Exception as _e:
+                        _results.append(f"  #{_mid}: error - {str(_e)[:50]}")
+
+                if not _results:
+                    return "[CMD] log classify: classification failed for all messages"
+                _header = f"[CMD] Classified {_classified}/{len(_unclassified['messages'])} messages:\n"
+                return _header + "\n".join(_results)
+
             elif len(cmd_args) == 1:
                 # [CMD] log <target> → self ↔ target
                 _other = cmd_args[0]
@@ -686,6 +746,11 @@ class Worker:
                     for c in _data["conversations"]:
                         _p = " ↔ ".join(c["participants"])
                         _lines.append(f"  {_p:40s} {c['message_count']:3d} msgs")
+                    return "\n".join(_lines)
+                elif "tags" in _data:
+                    _lines = ["[CMD] Tags:", ""]
+                    for t in _data["tags"]:
+                        _lines.append(f"  {t['tag']:12s}  {t['count']:3d} messages")
                     return "\n".join(_lines)
                 elif "results" in _data:
                     _lines = [f"[CMD] Search: '{_data.get('query','')}' ({_data['count']} results)", ""]
