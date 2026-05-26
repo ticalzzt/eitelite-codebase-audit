@@ -51,9 +51,10 @@ CMD_PERMISSIONS = {
     "restart":  CMD_LEVEL_WORKER,  # restart (worker=only self, admin=any)
     "exec":     CMD_LEVEL_MASTER,  # arbitrary bash command (master only)
     "report":   CMD_LEVEL_ADMIN,   # full system status summary
-    "escalate": CMD_LEVEL_WORKER,  # worker → seoul for help
-    "ping":     CMD_LEVEL_WORKER,  # connectivity test
-    "help":     CMD_LEVEL_WORKER,  # show available commands
+    "escalate": CMD_LEVEL_WORKER,
+    "ping":     CMD_LEVEL_WORKER,
+    "help":     CMD_LEVEL_WORKER,
+    "log":      CMD_LEVEL_WORKER,  # read-only: list/search/export conversations
 }
 
 logger = logging.getLogger("tical-code.worker")
@@ -639,6 +640,68 @@ class Worker:
                 return "[CMD] exec timeout (120s)"
             except Exception as e:
                 return f"[CMD] exec error: {e}"
+
+        if cmd_name == "log":
+            """Query tical-chat conversation archive. Calls tical-chat API."""
+            import urllib.request, urllib.error, json as _json
+            _chat_url = self.cfg.get("chat_url", "http://35.236.176.204:8080").rstrip("/")
+            _key = self.cfg.get("chat_key", "") or os.environ.get("TICAL_CHAT_KEY", "")
+
+            if not cmd_args:
+                # [CMD] log → list conversations
+                _url = f"{_chat_url}/v1/conversations"
+            elif cmd_args[0] == "search" and len(cmd_args) >= 2:
+                # [CMD] log search <keyword>
+                _q = " ".join(cmd_args[1:])
+                _url = f"{_chat_url}/v1/messages/search?q={urllib.parse.quote(_q)}"
+            elif cmd_args[0] == "export" and len(cmd_args) >= 3:
+                # [CMD] log export <sender> <target>
+                _s, _t = cmd_args[1], cmd_args[2]
+                _url = f"{_chat_url}/v1/export?sender={_s}&target={_t}&format=markdown"
+                # Export returns markdown directly
+                try:
+                    _req = urllib.request.Request(_url)
+                    _req.add_header("X-AI-Key", _key)
+                    with urllib.request.urlopen(_req, timeout=15) as _resp:
+                        return _resp.read().decode("utf-8")[:3000]
+                except Exception as e:
+                    return f"[CMD] log export error: {e}"
+            elif len(cmd_args) == 1:
+                # [CMD] log <target> → self ↔ target
+                _other = cmd_args[0]
+                _url = f"{_chat_url}/v1/conversation?sender={self.name}&target={_other}&limit=20"
+            elif len(cmd_args) >= 2:
+                # [CMD] log <a> <b>
+                _url = f"{_chat_url}/v1/conversation?sender={cmd_args[0]}&target={cmd_args[1]}&limit=20"
+            else:
+                return "[CMD] log: unknown subcommand. Try: log, log search <q>, log export <a> <b>, log <a> <b>"
+
+            try:
+                _req = urllib.request.Request(_url)
+                _req.add_header("X-AI-Key", _key)
+                with urllib.request.urlopen(_req, timeout=15) as _resp:
+                    _data = _json.loads(_resp.read())
+                if "conversations" in _data:
+                    _lines = ["[CMD] Conversations:", ""]
+                    for c in _data["conversations"]:
+                        _p = " ↔ ".join(c["participants"])
+                        _lines.append(f"  {_p:40s} {c['message_count']:3d} msgs")
+                    return "\n".join(_lines)
+                elif "results" in _data:
+                    _lines = [f"[CMD] Search: '{_data.get('query','')}' ({_data['count']} results)", ""]
+                    for m in _data["results"][:15]:
+                        _lines.append(f"  {m['sender']:12s} → {m['target']:12s}  {m['content'][:80]}")
+                    return "\n".join(_lines)
+                elif "messages" in _data:
+                    import datetime as _dt
+                    _lines = [f"[CMD] Conversation: {_data.get('sender','?')} ↔ {_data.get('target','?')} ({_data['count']} msgs)", ""]
+                    for m in _data["messages"][-15:]:
+                        _ts = _dt.datetime.fromtimestamp(m["timestamp"]).strftime("%H:%M:%S")
+                        _lines.append(f"  [{_ts}] {m['from']:12s} → {m['to']:12s}  {m['content'][:100]}")
+                    return "\n".join(_lines)
+                return f"[CMD] log: {_json.dumps(_data, ensure_ascii=False)[:300]}"
+            except Exception as e:
+                return f"[CMD] log error: {e}"
 
         return f"[CMD] unknown: {cmd_name}"
 
