@@ -9,9 +9,12 @@ def load_config() -> dict:
     base = os.environ.get("TICOBOT_DIR", "")
     if not base:
         for loc in [Path.home() / "tical-code", Path("/root/tical-code")]:
-            if loc.exists():
-                base = str(loc)
-                break
+            try:
+                if loc.exists():
+                    base = str(loc)
+                    break
+            except PermissionError:
+                continue
 
     cfg = {
         "workspace": base or str(Path.home()),
