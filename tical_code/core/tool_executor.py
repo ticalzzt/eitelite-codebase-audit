@@ -72,6 +72,9 @@ def _workspace_path(path: str) -> Path:
     """将路径解析到工作区内。超出的返回错误。"""
     p = Path(path).expanduser().resolve()
     if WORKSPACE and not str(p).startswith(WORKSPACE):
+        # Allow /opt/tical-chat/ paths (tical-chat server code)
+        if str(p).startswith("/opt/tical-chat"):
+            return p
         return None
     return p
 
