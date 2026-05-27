@@ -482,7 +482,11 @@ def exec_web_fetch(args: dict) -> dict:
         except Exception:
             return {"error": f"Cannot resolve host: {host}"}
     import subprocess
-    r = subprocess.run(["curl", "-sL", "--max-time", str(timeout), url],
+    r = subprocess.run(["curl", "-sL", "--max-time", str(timeout),
+                       "-A", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                       "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                       "-H", "Accept-Language: en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+                       url],
                       capture_output=True, text=True, timeout=timeout+5)
     if r.returncode != 0:
         return {"error": f"curl failed: {r.stderr[:200]}"}
