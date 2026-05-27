@@ -105,10 +105,6 @@ class Worker:
         # Fallback model: used when primary model fails (API error / timeout / rate limit)
         self.fallback_model = cfg.get("fallback_model", "deepseek-v4-flash")
 
-        # Expose LLM to tool_executor for switch_model
-        from tical_code.core import tool_executor as _te
-        _te._executor_llm = self.llm
-
         # System prompt
         # Pending task file for cross-poll continuation
         self._pending_task_file = Path(cfg.get("workspace", ".")) / ".pending_task.json"
@@ -906,12 +902,8 @@ All other messages enter the LLM conversation loop.
 
         # Lock reply target — workers ALWAYS reply to seoul, never to other workers
         # This prevents A↔B ping-pong loops between workers
-        import tical_code.core.tool_executor as _te
         if msg.sender in WORKER_IDS and msg.sender != "seoul":
-            _te._reply_target = "seoul"
-            logger.info(f"[worker] worker msg from {msg.sender}, reply→seoul")
-        else:
-            _te._reply_target = msg.sender
+            logger.info(f"[worker] worker msg from {msg.sender}, reply->seoul")
 
         # Reset EITE session tracking for this turn
         if hasattr(self, "eite") and self.eite:

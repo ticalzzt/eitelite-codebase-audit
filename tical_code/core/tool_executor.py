@@ -390,17 +390,6 @@ def exec_memory_load(args: dict = None, base_dir: str = "") -> dict:
     except Exception:
         return {"entries": {}}
 
-    try:
-        from .memory_sense import conversation_search
-    except ImportError:
-        return {"error": "memory_sense module unavailable"}
-    query = args.get("query", "")
-    if not query:
-        return {"error": "Query cannot be empty"}
-    session_id = args.get("session_id")
-    top_k = min(int(args.get("top_k", 5)), 20)
-    results = conversation_search(query, session_id=session_id, top_k=top_k)
-    return {"results": results, "total": len(results)}
 
 
 def exec_chat_send(args: dict) -> dict:
