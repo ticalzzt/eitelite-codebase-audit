@@ -1,7 +1,5 @@
 """EITE identity signature module — hardware binding + identity ID + anti-impersonation."""
 import hashlib
-import json
-import os
 import hmac
 
 _HW_FINGERPRINT_PATH = "/etc/machine-id"

@@ -602,7 +602,6 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "memory_save": lambda a: exec_memory_save(a, base_dir),
         "memory_load": lambda a: exec_memory_load(a, base_dir),
         "state_save": lambda a: exec_state_save(a, base_dir),
-        # conv_search removed
         "chat_send": exec_chat_send,
         "restart_self": exec_restart_self,
         "web_fetch": exec_web_fetch,
