@@ -106,8 +106,20 @@ _EVIDENCE_CLAIM_WORDS = re.compile(
     re.I,
 )
 
+# Rule 8: Self-knowledge claims must use check_self tool
+_SELF_CLAIM_RE = re.compile(
+    r"\b(my model|i(?:'m| am) (?:using|running)|i use|模型是|我是.*模型|"
+    r"deepseek|mimo|qwen|gpt|claude|openai|anthropic|"
+    r"mimo-v\d|deepseek-v\d|qwen-\d|gpt-\d|claude-\d)\b",
+    re.I,
+)
+
+# Tools that provide self-knowledge
+_SELF_VERIFY_TOOLS = {"check_self"}
+
 # Trust window: only count violations from the last 24 hours
 _TRUST_WINDOW_SECONDS = 86400
+
 
 class TruthfulReporter:
     """6-rule truthful reporter with sliding-window trust tracking."""
@@ -320,6 +332,33 @@ class TruthfulReporter:
 
         return violations
 
+    def _check_self_knowledge(self, reply_text: str) -> list[dict]:
+        """Rule 8: claims about own model/config must use check_self tool."""
+        violations: list[dict] = []
+
+        # Only trigger when self-related claims are made
+        if not _SELF_CLAIM_RE.search(reply_text):
+            return violations
+
+        # Check if check_self was actually used
+        used_self_verify = any(
+            a["tool_name"] in _SELF_VERIFY_TOOLS for a in self._actions
+        )
+
+        if not used_self_verify:
+            violations.append({
+                "rule": 8,
+                "claim": "self_knowledge_without_verification",
+                "correction": (
+                    "You made a claim about your own model, config, or capabilities "
+                    "without using the check_self tool. You MUST call check_self first "
+                    "and report what it returns. Never guess your own model — "
+                    "always read it from the actual config."
+                ),
+            })
+
+        return violations
+
     def scan_reply(self, reply_text: str) -> list[dict]:
         violations: list[dict] = []
         executed = {a["tool_name"] for a in self._actions}
@@ -388,6 +427,10 @@ class TruthfulReporter:
         violations.extend(self._check_perception_claims(reply_text))
         # Rule 9: Media viewing claims without actual media
         violations.extend(self._check_media_claims(reply_text))
+
+        # Rule 8: Self-knowledge claims must use check_self tool
+        self_knowledge_violations = self._check_self_knowledge(reply_text)
+        violations.extend(self_knowledge_violations)
 
         if violations:
             self._record_violations(len(violations))

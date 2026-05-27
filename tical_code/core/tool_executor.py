@@ -278,6 +278,18 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_self",
+            "description": "Check own runtime info: model, config, identity. ALWAYS use this when asked about your model, config, or capabilities. Never guess — this tool reads real data.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
 ]
 
 # ============ TOOL_SCHEMAS_CLEAN (remove bash_execute + replace dots for API compat) ============
@@ -553,6 +565,94 @@ def get_memory_injection() -> str:
         return ""
 
 
+def exec_check_self(args: dict = None) -> dict:
+    """Check own runtime info — model, config, identity. Never guesses, reads real data."""
+    import subprocess
+    info = {}
+
+    # 1) Read config.json (actual model config)
+    config_paths = [
+        Path.home() / "tical-code" / "config.json",
+        Path.home() / "eitelite" / "config.json",
+        Path("/root/tical-code") / "config.json",
+    ]
+    for cp in config_paths:
+        try:
+            if cp.exists():
+                try:
+                    cfg = json.loads(cp.read_text())
+                    info["config_file"] = str(cp)
+                    info["config_model"] = cfg.get("ai_model", "not set")
+                    info["config_endpoint"] = cfg.get("ai_endpoint", "not set")
+                    info["config_fallback"] = cfg.get("fallback_model", "not set")
+                    break
+                except Exception as e:
+                    info["config_error"] = str(e)
+        except PermissionError:
+            continue
+
+    # 2) Read .env (systemd environment)
+    env_paths = [
+        Path.home() / "tical-code" / ".env",
+        Path.home() / "eitelite" / ".env",
+    ]
+    for ep in env_paths:
+        if ep.exists():
+            try:
+                env_content = ep.read_text()
+                info["env_file"] = str(ep)
+                for line in env_content.split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        if "MODEL" in key.upper():
+                            info[f"env_{key}"] = val.strip()
+                        elif "BASE_URL" in key.upper():
+                            info[f"env_{key}"] = val.strip()
+                break
+            except Exception as e:
+                info["env_error"] = str(e)
+
+    # 3) Check systemd service (if running as service)
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", "agent-worker.service", "--property=Environment,ExecStart"],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.returncode == 0:
+            info["systemd"] = r.stdout.strip()
+            # Parse model from systemd Environment line
+            for part in r.stdout.split():
+                if "MODEL" in part.upper() and "=" in part:
+                    k, v = part.split("=", 1)
+                    info[f"systemd_{k.strip()}"] = v.strip()
+    except Exception:
+        pass
+
+    # 4) Check env vars at runtime
+    for var in ["AI_MODEL", "DEEPSEEK_MODEL", "OPENAI_MODEL", "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL"]:
+        val = os.environ.get(var, "")
+        if val:
+            info[f"runtime_env_{var}"] = val
+
+    # 5) Hostname
+    try:
+        info["hostname"] = subprocess.check_output(["hostname"], timeout=3).decode().strip()
+    except Exception:
+        pass
+
+    # 6) Git version
+    try:
+        r = subprocess.run(["git", "log", "--oneline", "-1"], capture_output=True, text=True, timeout=5, cwd=str(Path.home()))
+        if r.returncode == 0:
+            info["git_version"] = r.stdout.strip()
+    except Exception:
+        pass
+
+    return {"ok": True, "self_info": info}
+
+
 def exec_memory(args: dict) -> dict:
     """Save result to persistent memory. Params: action(add), target(memory), content(str)."""
     action = args.get("action", "add")
@@ -607,6 +707,7 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "web_fetch": exec_web_fetch,
         "file_search": exec_file_search,
         "list_dir": exec_list_dir,
+        "check_self": exec_check_self,
     }
     handler = dispatch.get(name)
     if not handler:
