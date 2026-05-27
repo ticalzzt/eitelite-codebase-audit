@@ -963,5 +963,84 @@ def t18_rule6_passes_raw():
     assert len(ev) == 0, f"Should pass with raw diff: {ev}"
 
 
+# ============================================================
+# T19: Anti-Fabrication — check_self + Rule 8
+# ============================================================
+
+@test("check_self tool exists and returns real data", "T19")
+def t19_check_self_exists():
+    """check_self must return config_model, hostname, and not crash."""
+    from tical_code.core.tool_executor import exec_check_self
+    r = exec_check_self()
+    assert r.get("ok") == True, f"check_self failed: {r}"
+    info = r.get("self_info", {})
+    assert "hostname" in info, f"No hostname in self_info: {info}"
+    assert len(info) > 1, f"self_info too sparse: {info}"
+
+@test("check_self in TOOL_SCHEMAS", "T19")
+def t19_check_self_in_schemas():
+    """check_self must be registered in TOOL_SCHEMAS for LLM discovery."""
+    from tical_code.core.tool_executor import TOOL_SCHEMAS
+    names = [s["function"]["name"] for s in TOOL_SCHEMAS]
+    assert "check_self" in names, f"check_self not in TOOL_SCHEMAS: {names}"
+
+@test("Rule 8 catches model claim without check_self", "T19")
+def t19_rule8_catches():
+    """TruthfulReporter Rule 8 must catch model claims when check_self not used."""
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    tr = TruthfulReporter(workspace="/tmp/t19_r8")
+    tr._actions = []  # no check_self used
+    violations = tr._check_self_knowledge("my model is mimo-v2.5-pro")
+    assert len(violations) == 1, f"Rule 8 should catch: {violations}"
+    assert violations[0]["rule"] == 8
+    assert violations[0]["claim"] == "self_knowledge_without_verification"
+
+@test("Rule 8 catches Chinese model claim", "T19")
+def t19_rule8_chinese():
+    """Rule 8 must catch Chinese model claims too."""
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    tr = TruthfulReporter(workspace="/tmp/t19_r8zh")
+    tr._actions = []
+    violations = tr._check_self_knowledge("模型是 DeepSeek-v4")
+    assert len(violations) == 1, f"Rule 8 should catch Chinese: {violations}"
+
+@test("Rule 8 passes when check_self used", "T19")
+def t19_rule8_passes():
+    """Rule 8 must pass when check_self was called before the claim."""
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    tr = TruthfulReporter(workspace="/tmp/t19_r8pass")
+    tr._actions = [{"tool_name": "check_self", "args": {}, "result": {"ok": True}, "verified": True}]
+    violations = tr._check_self_knowledge("my model is mimo-v2.5-pro")
+    assert len(violations) == 0, f"Rule 8 should pass with check_self: {violations}"
+
+@test("Rule 8 ignores non-model text", "T19")
+def t19_rule8_ignores():
+    """Rule 8 must NOT trigger on text without model claims."""
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    tr = TruthfulReporter(workspace="/tmp/t19_r8ignore")
+    tr._actions = []
+    violations = tr._check_self_knowledge("I fixed the bug in the config file")
+    assert len(violations) == 0, f"Rule 8 should not trigger: {violations}"
+
+@test("Prompt rule 13 exists (check_self mandate)", "T19")
+def t19_prompt_rule13():
+    """Prompt must include rule 13 about check_self for self-knowledge."""
+    from tical_code.core.prompt import build_system_prompt
+    p = build_system_prompt(name="test_worker")
+    assert "check_self" in p, "Prompt missing check_self reference"
+    assert "13." in p, "Prompt missing rule 13"
+
+@test("Full chain: scan_reply catches fabricated model claim", "T19")
+def t19_full_chain():
+    """Full TruthfulReporter scan must catch model fabrication."""
+    from tical_code.core.modules.truthful_reporter import TruthfulReporter
+    tr = TruthfulReporter(workspace="/tmp/t19_full")
+    tr._actions = [{"tool_name": "bash", "args": {"command": "ls"}, "result": {"exit_code": 0}, "verified": True}]
+    # Worker claims model without using check_self
+    violations = tr.scan_reply("I am using DeepSeek-v4-flash as my model.")
+    rule8_violations = [v for v in violations if v.get("rule") == 8]
+    assert len(rule8_violations) > 0, f"Full chain should catch: {violations}"
+
+
 if __name__ == "__main__":
     sys.exit(main())
