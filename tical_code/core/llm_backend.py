@@ -47,6 +47,7 @@ class OpenAIBackend(LLMBackend):
         self._model = model
         self._is_mimo = "mimo" in base_url.lower()
         self._fallback_model = os.environ.get("LLM_FALLBACK_MODEL", "")
+        self._temperature = float(os.environ.get("LLM_TEMPERATURE", "0.1"))
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
         self._providers = {
@@ -98,7 +99,10 @@ class OpenAIBackend(LLMBackend):
             return {"content": "[LLM circuit breaker open]", "tool_calls": []}
 
         body = {"model": self._model, "messages": messages,
-                "max_tokens": max_tokens}
+                "max_tokens": max_tokens,
+                "temperature": self._temperature}
+        if self._is_mimo and tools:
+            body["tools"] = tools
         if tools:
             body["tools"] = tools
 
@@ -171,12 +175,24 @@ class OpenAIBackend(LLMBackend):
                 "name": func.get("name", ""),
                 "args": args,
             })
-        return {"content": msg.get("content", "") or "",
+        content = msg.get("content", "") or ""
+        reasoning = msg.get("reasoning_content", "") or ""
+        # MiMo often puts response in reasoning_content, fallback content when empty
+        if not content and reasoning:
+            content = reasoning
+        return {"content": content,
                 "tool_calls": tool_calls,
-                "reasoning_content": msg.get("reasoning_content", "") or ""}
+                "reasoning_content": reasoning}
 
 def _load_configs() -> list[tuple]:
-    """Load all available configs, return [(cfg_dict, source_path)]."""
+    """Load all available configs, return [(cfg_dict, source_path)].
+
+    DEPRECATED: Use tical_code.core.config.load_config() instead.
+    This function reads from ~/tical_workers/*/config.json which is a legacy path.
+    Kept for backward compatibility only.
+    """
+    import warnings
+    warnings.warn("_load_configs() is deprecated, use config.load_config()", DeprecationWarning, stacklevel=2)
     configs = []
 
     for pattern in [
@@ -196,7 +212,10 @@ def _load_configs() -> list[tuple]:
 
 def create_llm_backend(backend: str = "auto", model: str = "",
                        api_key: str = "", base_url: str = "") -> LLMBackend:
-    """Factory: create LLM backend. Env vars first, config files fallback."""
+    """Factory: create LLM backend. Env vars first, config files fallback.
+
+    DEPRECATED: Use tical_code.core.config.load_config() + DeepSeekProvider instead.
+    """
     env_key = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("DEEPSEEK_API_KEY", "")
     env_base = os.environ.get("OPENAI_BASE_URL", "") or os.environ.get("DEEPSEEK_BASE_URL", "")
 

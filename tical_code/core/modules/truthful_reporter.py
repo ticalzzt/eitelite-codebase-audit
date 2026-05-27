@@ -384,6 +384,10 @@ class TruthfulReporter:
         # Rule 7: Completion claims must have verification evidence
         completion_violations = self._check_completion_evidence(reply_text)
         violations.extend(completion_violations)
+        # Rule 8: Perception claims without tool evidence
+        violations.extend(self._check_perception_claims(reply_text))
+        # Rule 9: Media viewing claims without actual media
+        violations.extend(self._check_media_claims(reply_text))
 
         if violations:
             self._record_violations(len(violations))
@@ -409,9 +413,51 @@ class TruthfulReporter:
         keys = env_map.get(capability_name, [])
         return any(os.environ.get(k) for k in keys) if keys else True
 
+    # ── Rule 8: Perception claims without evidence ─────────────
+    _PERCEPTION_PATTERNS = [
+        (re.compile(r"\b(I (see|saw|notice|observed|found|detected|spotted|looks? like|appears? to))\b", re.I), "see/saw/notice"),
+        (re.compile(r"\b(the\s+(image|photo|picture|screenshot|diagram|graph|chart)\s+(shows|contains|has|displays|depicts|reveals))\b", re.I), "image described"),
+        (re.compile(r"\b(截图|图片|照片|画面|示意图|图表)\s+(显示|展示|呈现|看到|看到|看见)\b"), "zh perception"),
+        (re.compile(r"\b(我\s*(看|发现|观察|检测|注意))\b"), "zh self-perception"),
+    ]
+
+    def _check_perception_claims(self, reply_text: str) -> list[dict]:
+        """Rule 8: if reply claims to see/perceive something without tool evidence."""
+        violations = []
+        for pattern, label in self._PERCEPTION_PATTERNS:
+            if pattern.search(reply_text):
+                violations.append({
+                    "rule": 8,
+                    "claim": f"perception_without_tool",
+                    "detail": f"Perception claim '{label}' detected but no vision tool was called. Reply may be hallucinated.",
+                    "severity": "high",
+                })
+                break  # One violation per perception pattern group
+        return violations
+
+    # ── Rule 9: Media viewing claims without actual media ─────
+    _MEDIA_CLAIM_PATTERNS = [
+        re.compile(r"\b(看到图片|看到照片|看到截图|查看了图片|查看了文件|图片显示|照片显示|截图显示)\b", re.I),
+        re.compile(r"\b(I\s+(see|saw|view|viewed|looked\s+at)\s+(the\s+)?(image|photo|picture|screenshot))\b", re.I),
+    ]
+
+    def _check_media_claims(self, reply_text: str) -> list[dict]:
+        """Rule 9: if reply claims to have viewed media that wasn't actually provided."""
+        violations = []
+        for pattern in self._MEDIA_CLAIM_PATTERNS:
+            if pattern.search(reply_text):
+                violations.append({
+                    "rule": 9,
+                    "claim": "media_viewed_without_media",
+                    "detail": "Claimed to view media (image/photo/screenshot) but no actual media data was provided to the model",
+                    "severity": "high",
+                })
+                break
+        return violations
+
     def has_evidence_violations(self, violations: list[dict]) -> bool:
         """True if violations include Rule 6 or Rule 7 (evidence-related)."""
-        return any(v.get("rule") in (6, 7) for v in violations)
+        return any(v.get("rule") in (6, 7, 8, 9) for v in violations)
 
     def reset(self) -> None:
         self._actions.clear()
