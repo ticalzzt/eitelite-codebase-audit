@@ -458,6 +458,41 @@ def exec_restart_self(args: dict = None) -> dict:
     return {"ok": True, "msg": "SIGTERM sent, systemd will restart"}
 
 
+
+# -------------------------------------------------------------------
+# CDP Browser Fetch — bypass Cloudflare via Chrome DevTools Protocol
+# -------------------------------------------------------------------
+_CDP_URL = os.environ.get("CDP_URL", "http://localhost:9222")
+
+def _cdp_fetch(url: str, timeout: int = 15) -> dict:
+    """Fetch URL via Playwright Chromium (bypasses Cloudflare)."""
+    import os, time
+    
+    playwright_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH",
+                                      os.path.expanduser("~/.cache/ms-playwright"))
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage",
+                      "--disable-blink-features=AutomationControlled"]
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            )
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                time.sleep(2)
+                text = page.inner_text("body") or ""
+                if text:
+                    return {"content": text[:100000], "url": url, "source": "playwright"}
+                return {"error": "empty page"}
+            finally:
+                browser.close()
+    except Exception as e:
+        return {"error": f"playwright failed: {e}"}
+
 def exec_web_fetch(args: dict) -> dict:
     """Fetch a URL. Blocks private IPs (SSRF protection)."""
     url = args.get("url", "")
@@ -482,11 +517,17 @@ def exec_web_fetch(args: dict) -> dict:
         except Exception:
             return {"error": f"Cannot resolve host: {host}"}
     import subprocess
+    # Try CDP browser first (bypasses Cloudflare)
+    import os
+    cdp_result = _cdp_fetch(url, timeout)
+    if "content" in cdp_result:
+        return cdp_result
+    # CDP failed, fallback to curl
     r = subprocess.run(["curl", "-sL", "--max-time", str(timeout),
-                       "-A", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                       "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                       "-H", "Accept-Language: en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-                       url],
+                           "-A", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                           "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                           "-H", "Accept-Language: en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+                           url],
                       capture_output=True, text=True, timeout=timeout+5)
     if r.returncode != 0:
         return {"error": f"curl failed: {r.stderr[:200]}"}
