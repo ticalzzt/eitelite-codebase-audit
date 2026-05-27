@@ -18,13 +18,12 @@ from tical_code.core.channel import Message, Response, TelegramChannel, TicalCha
 from tical_code.core.llm_backend import create_llm_backend
 from tical_code.core.tool_executor import execute, TOOL_SCHEMAS
 from tical_code.core.response_formatter import format_result, format_error, format_progress
-from tical_code.core.eite import init as eite_init, get_verify
+from tical_code.core.eite.verify_engine_v2 import VerificationEngine
 from tical_code.core.prompt import build_system_prompt
 from tical_code.core.config import load_config
 from tical_code.core.modules.session_manager import SessionManager
 from tical_code.core.modules.context_compactor import ContextCompactor
 from tical_code.core.modules.loop_detector import LoopDetector
-from tical_code.core.modules.truthful_reporter import TruthfulReporter
 from tical_code.core.trace_recorder import TraceRecorder
 from tical_code.core.config import get_data_collection_config
 from tical_code.core.modules.proposal_gate import ProposalGate
@@ -108,7 +107,11 @@ class Worker:
         self.sessions = SessionManager(db_path=str(Path(w) / "sessions.db"))
         self.compactor = ContextCompactor(max_tokens=200000, keep_recent=20)
         self.loop_detector = LoopDetector(window_size=30)
-        self.reporter = TruthfulReporter(workspace=w)
+        # VerificationEngine — single source of truth for all verification
+        self.verification = VerificationEngine(
+            identity_id=cfg['name'],
+            workspace=cfg.get("workspace", ""),
+        )
         # TraceRecorder - 0号模型训练数据采集
         dc = get_data_collection_config(cfg)
         self.tracer = TraceRecorder(system_name=cfg.get('name', 'eitelite'), enabled=dc['enabled'])
@@ -124,15 +127,9 @@ class Worker:
             target_model=cfg.get("ai_model", ""),
         )
 
-        # EITE identity layer
-        eite_init(identity_id=cfg['name'], workspace=cfg.get("workspace", ""))
-        eite_verify = get_verify()
-        if eite_verify:
-            self.system_prompt += eite_verify.get_identity_marker()
-            self.eite = eite_verify
-            logger.info(f"EITE identity bound: {cfg['name']}")
-        else:
-            self.eite = None
+        # EITE identity layer — now integrated into VerificationEngine
+        self.system_prompt += self.verification.get_identity_marker()
+        logger.info(f"EITE identity bound: {cfg['name']}")
 
         logger.info(
             f"Worker initialized: name={self.name} "
@@ -574,9 +571,8 @@ All other messages enter the LLM conversation loop.
         # Lock reply target — workers may only chat_send to the message sender
         import tical_code.core.tool_executor as _te
 
-        # Reset EITE session tracking for this turn
-        if hasattr(self, "eite") and self.eite:
-            self.eite.reset_session()
+        # Reset verification session tracking for this turn
+        self.verification.reset_session()
 
         # TraceRecorder: task start
         if hasattr(self, 'tracer'):
@@ -664,17 +660,30 @@ All other messages enter the LLM conversation loop.
                             responded.add(tc_id)
                             continue
 
+                    # Phase 1: Verify tool call (before execution)
+                    phase1 = self.verification.verify_tool_call(name, args)
+                    if not phase1.passed:
+                        conv.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": f"[BLOCKED] {name}: {phase1.violations[0].detail}. Stop - try a different approach or reply directly.",
+                        })
+                        responded.add(tc_id)
+                        continue
+
                     result = execute(name, args, base_dir=self.workspace)
                     formatted = format_result(name, result)
-                    # EITE: verify tool result
-                    if hasattr(self, "eite") and self.eite:
-                        result = self.eite.verify_tool_result(name, args, result)
-                        logger.info(f"  verify {name}: {result.get('verified')} ({result.get('verify_detail', '')})")
-                        if not result.get("verified"):
+
+                    # Phase 2: Verify tool output (after execution)
+                    phase2 = self.verification.verify_tool_output(name, args, result)
+                    logger.info(f"  verify {name}: passed={phase2.passed} ({phase2.violations[0].detail if phase2.violations else 'ok'})")
+                    if not phase2.passed:
+                        # High severity output issues → block
+                        if any(v.severity == "high" for v in phase2.violations):
                             conv.append({
                                 "role": "tool",
                                 "tool_call_id": tc_id,
-                                "content": f"[BLOCKED] {name}: {result.get('verify_detail', '?')}. Stop - try a different approach or reply directly.",
+                                "content": f"[BLOCKED] {name}: {phase2.violations[0].detail}. Stop - try a different approach or reply directly.",
                             })
                             responded.add(tc_id)
                             continue
@@ -688,11 +697,10 @@ All other messages enter the LLM conversation loop.
                     })
                     responded.add(tc_id)
 
-                    # Module 4: Record action
-                    verified = result.get("ok", False) or result.get("exit_code") == 0
-                    self.reporter.record_action(name, args, result, verified=verified)
+                    # Record action for verification (already done in verify_tool_output)
                     # TraceRecorder: record tool
                     if hasattr(self, 'tracer'):
+                        verified = result.get("ok", False) or result.get("exit_code") == 0
                         self.tracer.on_tool_result(name, args, result, verified)
 
                     # Module 3: Record & detect loop
@@ -703,10 +711,9 @@ All other messages enter the LLM conversation loop.
                         if loop_result["level"] == "critical":
                             break
 
-                # EITE: per-iteration all-blocked check
-                if hasattr(self, "eite") and self.eite:
-                    session = getattr(self.eite, "_session_tools", [])
-                    it_tools = session[-len(tool_calls):] if len(tool_calls) > 0 else []
+                # Per-iteration: all tools blocked check
+                if self.verification._session_tools:
+                    it_tools = self.verification._session_tools[-len(tool_calls):] if len(tool_calls) > 0 else []
                     if len(it_tools) == len(tool_calls) and all(t.get("verified") == False for t in it_tools):
                         conv.append({
                             "role": "system",
@@ -772,37 +779,38 @@ All other messages enter the LLM conversation loop.
                         })
                         continue
 
-                # EITE: scan reply
-                if hasattr(self, "eite") and self.eite:
-                    warnings = self.eite.scan_reply(reply)
-                    if warnings:
-                        logger.warning(f"EITE unverified claims: {warnings}")
-
-                # Module 4: Scan for violations
-                violations = self.reporter.scan_reply(reply)
-                if violations:
-                    has_evidence_issue = self.reporter.has_evidence_violations(violations)
-                    if has_evidence_issue:
-                        # Evidence missing — force retry instead of sending bare claim
+                # Phase 3: Verify reply before sending
+                phase3 = self.verification.verify_reply(reply)
+                if not phase3.passed:
+                    if phase3.action == "block":
+                        # Critical violations — force retry
                         conv.append({
                             "role": "system",
                             "content": (
-                                "[EVIDENCE REQUIRED] You claimed completion without required evidence. "
-                                "You MUST run: git diff (to show changes), tests (to verify), "
-                                "and git log --oneline -1 (to confirm commit). "
-                                "Include the raw terminal output for each step in your reply."
-                            )
+                                "[VERIFICATION BLOCKED] " + "; ".join(phase3.corrections)
+                                + ". You MUST fix these issues and try again."
+                            ),
                         })
-                        logger.warning(f"Evidence violations found, forcing retry: {violations}")
-                    self._evidence_retry_count += 1
-                    if self._evidence_retry_count >= 3:
-                        # Give up retrying - send with correction note
-                        reply = reply + '\n' + self.reporter.format_corrections(violations)
-                        break  # exit tool loop, send reply as-is
+                        logger.warning(f"Reply blocked: {phase3.corrections}")
+                    elif phase3.action == "retry":
+                        # High severity — force retry for evidence
+                        conv.append({
+                            "role": "system",
+                            "content": (
+                                "[EVIDENCE REQUIRED] " + "; ".join(phase3.corrections)
+                                + ". You MUST include raw terminal output as evidence."
+                            ),
+                        })
+                        logger.warning(f"Reply needs retry: {phase3.corrections}")
+                        self._evidence_retry_count += 1
+                        if self._evidence_retry_count >= 3:
+                            # Give up — send with correction note
+                            reply += "\n" + "; ".join(f"[{c}]" for c in phase3.corrections)
+                            break
                         continue
-                    else:
-                        # Non-evidence violations — append note
-                        reply += "\n" + self.reporter.format_corrections(violations)
+                    elif phase3.action == "rewrite":
+                        # Medium severity — append correction note
+                        reply += "\n" + "; ".join(f"[{c}]" for c in phase3.corrections)
 
                 # Check for continuation hint — only if explicit "I still need to"
                 if "I still need to" in reply:
