@@ -51,7 +51,7 @@ class VerificationResult:
 # Regex patterns
 # ===========================================================================
 
-# Declaration patterns (verb → expected tools)
+# Declaration patterns — require "I have/I've" prefix to avoid false positives on casual speech
 _DECL_VERB_MAP: dict[str, list[str]] = {
     "saved":     ["file_write", "state_save", "memory_save"],
     "created":   ["file_write", "bash"],
@@ -63,7 +63,6 @@ _DECL_VERB_MAP: dict[str, list[str]] = {
     "verified":  ["file_read", "bash", "web_fetch"],
     "confirmed": ["bash", "file_read"],
     "sent to":   ["chat_send"],
-    # Chinese
     "已保存": ["file_write", "state_save", "memory_save"],
     "已创建": ["file_write", "bash"],
     "已删除": ["bash", "file_write"],
@@ -76,7 +75,8 @@ _DECL_VERB_MAP: dict[str, list[str]] = {
 }
 
 _DECL_RE = re.compile(
-    r"\b(saved|created|deleted|installed|deployed|fixed|checked|verified|confirmed|sent to|"
+    r"(?:\b(?:i(?:'ve| have)|we(?:'ve| have)|it(?:'s| has))\s+)"
+    r"(saved|created|deleted|installed|deployed|fixed|checked|verified|confirmed|sent to|"
     r"已保存|已创建|已删除|已安装|已部署|已修复|已检查|已确认|已发送)\b",
     re.I,
 )
@@ -352,7 +352,7 @@ class VerificationEngine:
 
         # Rule 1-2: Declaration-evidence matching
         for match in _DECL_RE.finditer(reply.lower()):
-            verb = match.group(1)
+            verb = match.group(1)  # group 1 = the verb after prefix
             expected_tools = _DECL_VERB_MAP.get(verb, [])
             if expected_tools:
                 executed = {a["tool_name"] for a in self._actions}
