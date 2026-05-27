@@ -17,7 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tical_code.core.channel import Message, Response, TelegramChannel, TicalChatChannel
 from tical_code.core.llm_interface import DeepSeekProvider
-from tical_code.core.tool_executor import execute, TOOL_SCHEMAS, TOOL_SCHEMAS_CLEAN, redact_secrets
+from tical_code.core.tool_executor import execute, TOOL_SCHEMAS
+try:
+    from tical_code.core.tool_executor import TOOL_SCHEMAS_CLEAN
+except ImportError:
+    TOOL_SCHEMAS_CLEAN = TOOL_SCHEMAS  # fallback for older tool_executor
+try:
+    from tical_code.core.tool_executor import redact_secrets
+except ImportError:
+    redact_secrets = lambda x: x  # fallback
 from tical_code.core.response_formatter import format_result
 from tical_code.core.eite import init as eite_init, get_verify
 from tical_code.core.prompt import build_system_prompt
