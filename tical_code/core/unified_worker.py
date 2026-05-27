@@ -957,6 +957,8 @@ All other messages enter the LLM conversation loop.
         if history:
             conv.extend(history)
         conv.append({"role": "user", "content": msg.content})
+        # Track where new messages start (for session persistence)
+        _new_start = len(conv) - 1  # index of user message
 
         max_iterations = 60
         for iteration in range(max_iterations):
@@ -1249,14 +1251,36 @@ All other messages enter the LLM conversation loop.
                             chat_id=msg.chat_id,
                         ))
 
-                # Module 1: Save conversation
-                new_messages = [{"role": "assistant", "content": reply}]
+                # Module 1: Save conversation — full turn (user + tool chain + assistant)
                 session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
-                self.sessions.save_messages(session_id, new_messages)
+                # Extract new messages from this turn (skip system prompt + old history)
+                new_msgs = []
+                for m in conv[_new_start:]:
+                    entry = {"role": m["role"], "content": m.get("content", "")}
+                    if m.get("tool_calls"):
+                        entry["tool_calls"] = m["tool_calls"]
+                    if m.get("tool_call_id"):
+                        entry["tool_call_id"] = m["tool_call_id"]
+                    new_msgs.append(entry)
+                self.sessions.save_messages(session_id, new_msgs)
                 return
 
-        # Exceeded max iterations — log only, don't reply (avoids chat noise)
+        # Exceeded max iterations — save partial conversation and log
         logger.warning(f"[worker] {msg.sender}: exceeded max tool iterations")
+        # Save whatever we have so far (user msg + any tool chains)
+        try:
+            session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
+            new_msgs = []
+            for m in conv[_new_start:]:
+                entry = {"role": m["role"], "content": m.get("content", "")}
+                if m.get("tool_calls"):
+                    entry["tool_calls"] = m["tool_calls"]
+                if m.get("tool_call_id"):
+                    entry["tool_call_id"] = m["tool_call_id"]
+                new_msgs.append(entry)
+            self.sessions.save_messages(session_id, new_msgs)
+        except Exception:
+            logger.exception("save on max_iterations exceeded")
         # Silently save continuation if any context remains
         if conv and len(conv) > 2:
             last_assistant = next(
