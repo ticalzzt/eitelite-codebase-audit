@@ -11,12 +11,12 @@ def _get_hardware_id() -> str:
     try:
         with open(_HW_FINGERPRINT_PATH, "r") as f:
             return f.read().strip()
-    except:
+    except OSError:
         # fallback: 使用 /proc/sys/kernel/random/boot_id
         try:
             with open("/proc/sys/kernel/random/boot_id", "r") as f:
                 return f.read().strip()
-        except:
+        except OSError:
             return "unknown"
 
 def _derive_secret(identity_id: str) -> str:

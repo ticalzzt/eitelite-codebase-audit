@@ -3,9 +3,12 @@ EITE验证引擎 v0.4 — 真实的工具验证和回复扫描引擎。
 替换之前 _EiteVerifyWrapper 的空壳实现。
 """
 import json
+import logging
 import os
 import re
 from pathlib import Path
+
+logger = logging.getLogger("tical-code.eite.verify")
 
 
 class EiteVerifyEngine:
@@ -94,8 +97,8 @@ class EiteVerifyEngine:
             if check_result.get("action") == "block":
                 return self._reject(entry,
                     f"Blocked by EITE rule: {check_result.get('reason', '?')}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"EITE check module error: {e}")
 
         return {"verified": True, "verify_detail": "ok"}
 

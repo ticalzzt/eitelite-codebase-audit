@@ -193,7 +193,7 @@ class Worker:
                 data = json.loads(self._pending_task_file.read_text())
                 self._pending_task_file.unlink(missing_ok=True)
                 return data
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             pass
         return None
 
@@ -446,16 +446,16 @@ class Worker:
                         "hostname": self._get_hostname(),
                         "status": "online",
                     })
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"anchor register failed: {e}")
 
             # Vigil patrol every 5 min
             if self._vigil_enabled and hasattr(self, 'vigil'):
                 import asyncio
                 try:
                     asyncio.run(self.vigil.patrol())
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"vigil patrol failed: {e}")
             time.sleep(1)
 
     def _execute_direct(self, msg, channel):
@@ -552,7 +552,7 @@ class Worker:
                              capture_output=True, text=True, timeout=5)
                 if _r.returncode == 0:
                     lines.append(f"Git:    {_r.stdout.strip()[:60]}")
-            except Exception:
+            except (OSError, subprocess.TimeoutExpired):
                 pass
             return "\n".join(lines)
 
@@ -571,7 +571,7 @@ class Worker:
             try:
                 _r = _sp.run(["uptime"], capture_output=True, text=True, timeout=5)
                 lines.append(f"          {_r.stdout.strip()}")
-            except Exception:
+            except (OSError, subprocess.TimeoutExpired):
                 pass
             # Git
             try:
@@ -579,7 +579,7 @@ class Worker:
                              capture_output=True, text=True, timeout=5)
                 if _r.returncode == 0:
                     lines.append(f"Recent:   {_r.stdout.strip()}")
-            except Exception:
+            except (OSError, subprocess.TimeoutExpired):
                 pass
             # Disk
             try:
@@ -587,7 +587,7 @@ class Worker:
                              capture_output=True, text=True, timeout=5)
                 _disk = _r.stdout.strip().split("\n")[-1].strip() if _r.stdout else "?"
                 lines.append(f"Disk:     {_disk}")
-            except Exception:
+            except (OSError, subprocess.TimeoutExpired):
                 pass
             return "\n".join(lines)
 
@@ -1109,8 +1109,8 @@ All other messages enter the LLM conversation loop.
                                 "current_task": msg.content[:80] if msg.content else self.name,
                                 "progress": f"{iteration}/{max_iterations}",
                             })
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"anchor progress update failed: {e}")
                     
                     # Auto-save: save_important results as memory
                     if verified and name in ("execute_code", "web_search", "web_fetch", "memory_fts_search"):
@@ -1123,8 +1123,8 @@ All other messages enter the LLM conversation loop.
                                     "target": "memory",
                                     "content": f"[{name}] {args.get('code', args.get('query', ''))[:80]}: {result_text[:80]}",
                                 })
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"auto-save memory failed: {e}")
 
                     # Module 3: Record & detect loop
                     self.loop_detector.record(name, args, result)

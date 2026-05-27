@@ -9,12 +9,15 @@ Worker 通过此服务读写共享状态:
 所有路径支持 /anchor 前缀 (nginx 透传)。
 """
 import json
+import logging
 import os
 import time
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("tical-code.anchor")
 
 PORT = int(os.getenv("ANCHOR_PORT", "9878"))
 ANCHOR_FILE = Path(os.getenv("ANCHOR_FILE", str(Path.home() / "anchors" / "ops-anchor.json")))
@@ -54,8 +57,8 @@ class AnchorHandler(BaseHTTPRequestHandler):
         if ANCHOR_FILE.exists():
             try:
                 return json.loads(ANCHOR_FILE.read_text())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"_load_anchor parse error: {e}")
         return {"version": "unknown"}
     
     def _count_py_files(self, root_dir: str) -> dict:
@@ -75,8 +78,8 @@ class AnchorHandler(BaseHTTPRequestHandler):
             for f in files:
                 try:
                     total_lines += len(Path(f).read_text().split("\n"))
-                except:
-                    pass
+                except Exception:
+                    pass  # unreadable file, skip
             return {"py_files": len(files), "py_lines": total_lines,
                     "path": str(d), "status": "ok"}
         except Exception as e:
@@ -96,8 +99,8 @@ class AnchorHandler(BaseHTTPRequestHandler):
                     tmp + "/eitelite"], capture_output=True, timeout=60)
                 eite = self._count_py_files(tmp + "/eitelite")
                 _sp.run(["rm", "-rf", tmp], capture_output=True)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"clone eitelite for count failed: {e}")
         # tical-code 不完整 → 同上
         if tical.get("py_files", 0) < 10:
             try:
@@ -108,8 +111,8 @@ class AnchorHandler(BaseHTTPRequestHandler):
                     tmp + "/tical-code"], capture_output=True, timeout=60)
                 tical = self._count_py_files(tmp + "/tical-code")
                 _sp.run(["rm", "-rf", tmp], capture_output=True)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"clone tical-code for count failed: {e}")
         return {"eitelite": eite, "tical-code": tical}
     
     def _worker_list(self) -> dict:

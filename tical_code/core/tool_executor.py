@@ -504,8 +504,8 @@ def exec_file_search(args: dict) -> dict:
     matches = []
     try:
         matches = glob.glob(f"{full_dir}/**/{pattern}", recursive=True)
-    except Exception:
-        pass
+    except Exception as e:
+        return {"error": f"Glob failed: {e}"}
     if content_pattern:
         import subprocess
         grep_r = subprocess.run(
@@ -540,7 +540,7 @@ def exec_list_dir(args: dict) -> dict:
             st = _os.stat(fp)
             entries.append({"name": f, "is_dir": _os.path.isdir(fp),
                            "size": st.st_size, "modified": int(st.st_mtime)})
-        except:
+        except OSError:
             entries.append({"name": f, "is_dir": False, "size": 0, "modified": 0})
     return {"files": entries, "path": path, "total": len(entries)}
 
@@ -587,8 +587,8 @@ def exec_memory(args: dict) -> dict:
             del mem["entries"][k]
     try:
         mem_file.write_text(json.dumps(mem, ensure_ascii=False, indent=2))
-    except Exception:
-        pass
+    except Exception as e:
+        return {"ok": False, "error": f"Memory write failed: {e}"}
     return {"ok": True, "key": key}
 
 

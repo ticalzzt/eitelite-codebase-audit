@@ -104,8 +104,8 @@ def load_config() -> dict:
             wc = json.loads(wc_path.read_text())
             if wc.get("name"):
                 cfg["name"] = wc["name"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"worker_config.json parse error: {e}")
 
     # config.json (AI settings)
     config_path = _find_config_json()
