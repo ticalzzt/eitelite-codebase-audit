@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from tical_code.core.channel import Message, Response, TelegramChannel, TicalChatChannel
 from tical_code.core.llm_backend import create_llm_backend
 from tical_code.core.tool_executor import execute, TOOL_SCHEMAS
-from tical_code.core.response_formatter import format_result
+from tical_code.core.response_formatter import format_result, format_error, format_progress
 from tical_code.core.eite.verify_engine_v2 import VerificationEngine
 from tical_code.core.prompt import build_system_prompt
 from tical_code.core.config import load_config
@@ -29,9 +29,6 @@ from tical_code.core.trace_recorder import TraceRecorder
 from tical_code.core.trace.verification_recorder import VerificationEventRecorder
 from tical_code.core.config import get_data_collection_config
 from tical_code.core.modules.proposal_gate import ProposalGate
-from tical_code.core.memory import get_persistent_memory
-from tical_code.vigil import build_vigil
-from tical_code.core.usage import UsageTracker
 
 # Known AI worker names — used for CMD protocol identity detection
 WORKER_IDS = {"seoul", "tico", "ani", "kael", "tico-oracle", "test"}
@@ -67,9 +64,9 @@ TOOL_SCHEMAS_CLEAN = [
 ]
 
 # Tool call limits
-MAX_TOOL_ITERATIONS = 60
-SOFT_HINT_AT = 8   # gentle nudge to wrap up (tightened)
-HARD_STOP_AT = 12   # force stop (tightened)
+MAX_TOOL_ITERATIONS = 8
+SOFT_HINT_AT = 5   # gentle nudge to wrap up
+HARD_STOP_AT = 8   # force stop
 
 class Worker:
     """Unified worker - polls channels, calls LLM, executes tools, replies."""
@@ -127,33 +124,6 @@ class Worker:
         self.gate = ProposalGate(timeout_seconds=300)
         self._evidence_retry_count = 0
 
-        # Usage tracking
-        self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
-
-        # Fallback model: retry with this when primary fails
-        self.fallback_model = cfg.get("fallback_model", "")
-
-        # CDP browser config — set env for tool_executor to pick up
-        cdp_url = cfg.get("cdp_url", "")
-        if cdp_url:
-            os.environ["CDP_URL"] = cdp_url
-            logger.info(f"CDP browser: {cdp_url}")
-        if not cfg.get("cdp_headless", True):
-            os.environ["CDP_HEADLESS"] = "0"
-        cdp_proxy = cfg.get("cdp_proxy", "")
-        if cdp_proxy:
-            os.environ["CDP_PROXY"] = cdp_proxy
-
-        # Vigil — passive monitoring (patrol every 5 minutes)
-        try:
-            self._vigil = build_vigil()
-            self._vigil_patrol_interval = 300  # seconds
-            self._last_patrol = 0
-            logger.info("Vigil monitoring active")
-        except Exception as e:
-            self._vigil = None
-            logger.warning(f"Vigil init failed (non-critical): {e}")
-
         self.system_prompt = build_system_prompt(
             name=cfg['name'],
             hostname=self._get_hostname(),
@@ -164,16 +134,6 @@ class Worker:
         # EITE identity layer — now integrated into VerificationEngine
         self.system_prompt += self.verification.get_identity_marker()
         logger.info(f"EITE identity bound: {cfg['name']}")
-
-        # Memory injection — load persistent memory context into system prompt
-        try:
-            self._persistent_mem = get_persistent_memory()
-            mem_ctx = self._persistent_mem.get_context_for_session(max_items=20)
-            if mem_ctx:
-                self.system_prompt += "\n\n" + mem_ctx
-                logger.info(f"Memory injected: {len(mem_ctx)} chars")
-        except Exception as e:
-            logger.warning(f"Memory injection failed: {e}")
 
         logger.info(
             f"Worker initialized: name={self.name} "
@@ -613,6 +573,7 @@ All other messages enter the LLM conversation loop.
                 return
 
         # Lock reply target — workers may only chat_send to the message sender
+        import tical_code.core.tool_executor as _te
 
         # Reset verification session tracking for this turn
         self.verification.reset_session()
@@ -658,34 +619,9 @@ All other messages enter the LLM conversation loop.
             conv.append({"role": "user", "content": msg.content})
         _new_start = len(conv) - 1  # track where new messages begin
 
-        max_iterations = 120
-        import asyncio
+        max_iterations = 120  # Increased from 60 for data generation tasks
         for iteration in range(max_iterations):
-            # Vigil patrol — check every 5 minutes
-            if self._vigil and (time.time() - self._last_patrol > self._vigil_patrol_interval):
-                try:
-                    asyncio.get_event_loop().run_until_complete(self._vigil.patrol())
-                except Exception:
-                    pass  # vigil is non-critical
-                self._last_patrol = time.time()
-
-            # Context compaction — trim if over token limit
-            if self.compactor.needs_compaction(conv):
-                conv = self.compactor.compact(conv, self.llm.call)
-                logger.info(f"[worker] context compacted: {len(conv)} messages")
-            try:
-                response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
-            except Exception as e:
-                logger.warning(f"LLM call failed: {e}")
-                # Fallback model retry
-                if self.fallback_model and hasattr(self.llm, 'set_model'):
-                    logger.info(f"Retrying with fallback model: {self.fallback_model}")
-                    self.llm.set_model(self.fallback_model)
-                    response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
-                else:
-                    raise
-            # Track usage
-            self.usage.record_api_call(provider="llm", model=self.cfg.get("ai_model", ""))
+            response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
             content = response.get("content", "")
             tool_calls = response.get("tool_calls", [])
 
@@ -790,9 +726,16 @@ All other messages enter the LLM conversation loop.
                 if self.verification._session_tools:
                     it_tools = self.verification._session_tools[-len(tool_calls):] if len(tool_calls) > 0 else []
                     if len(it_tools) == len(tool_calls) and all(t.get("verified") == False for t in it_tools):
-                        logger.info("  all blocked - forced exit")
-                        reply = "[WORKER BLOCKED] All tool calls blocked by safety policy. Cannot complete this task."
-                        break
+                        conv.append({
+                            "role": "system",
+                            "content": "All tool calls were blocked by safety policy. Reply directly to the user explaining what you cannot do."
+                        })
+                        logger.info("  all blocked - injected system hint")
+
+                # Append accumulated loop detector messages after all tool responses
+                for ld_msg in loop_messages:
+                    conv.append({"role": "system", "content": ld_msg})
+
                 # Fill missing tool responses to satisfy API requirement
                 for tc in tool_calls:
                     tc_id = tc.get("id", "")
@@ -804,12 +747,12 @@ All other messages enter the LLM conversation loop.
                         })
 
                 # Iteration guard — use system role (no tool_call_id needed)
-                if iteration >= SOFT_HINT_AT:
+                if iteration >= 10:
                     conv.append({
                         "role": "system",
                         "content": f"You have used {iteration + 1} rounds. Finish your task and reply to the user.",
                     })
-                if iteration >= HARD_STOP_AT:
+                if iteration >= 20:
                     conv.append({
                         "role": "system",
                         "content": "STOP calling tools. Reply now.",
@@ -927,7 +870,11 @@ All other messages enter the LLM conversation loop.
                     last_reply = m["content"]
                     break
         if channel and msg.sender not in ("system", None):
-            timeout_msg = last_reply[:1500] if last_reply else "[worker] No assistant reply was produced."
+            timeout_msg = "[worker timeout after reaching max tool iterations]"
+            if last_reply:
+                timeout_msg += f"\n\n{last_reply[:1500]}"
+            else:
+                timeout_msg += "\nNo assistant reply was produced."
             channel.send(Response(
                 content=timeout_msg,
                 target=msg.sender,
