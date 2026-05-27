@@ -652,7 +652,7 @@ class Worker:
         if cmd_name == "log":
             """Query tical-chat conversation archive. Calls tical-chat API."""
             import urllib.request, urllib.error, json as _json
-            _chat_url = self.cfg.get("chat_url", "http://35.236.176.204:8080").rstrip("/")
+            _chat_url = self.cfg.get("chat_url", "").rstrip("/")
             _key = self.cfg.get("chat_key", "") or os.environ.get("TICAL_CHAT_KEY", "")
 
             if not cmd_args:

@@ -1,6 +1,7 @@
 """System prompt builder - English only."""
 
 import logging
+from pathlib import Path
 
 logger = logging.getLogger("tical-code.prompt")
 
@@ -45,7 +46,7 @@ def build_system_prompt(
         "1. Reply concisely, 2-3 sentences max. Use natural language, never output tool tags.",
         "2. Never use markdown tables (|---|---|). Use bullet lists or key: value pairs instead. Tables render as garbled text on Telegram.",
         "3. System info must be obtained via bash tool, never guess.",
-        "4. When uncertain, read /home/ubuntu/anchors/ops-anchor.json for VPS info, IPs, API keys.",
+        f"4. When uncertain, read {Path.home() / 'anchors' / 'ops-anchor.json'} for VPS info, IPs, API keys.",
         "   IMPORTANT: The anchor's 'version' and 'note' are document metadata, not your software version.",
         "   Your actual version comes from git commit, not from the anchor.",
         "5. When asked to perform an action, use tools first. Never say \"I can't\" without trying.",

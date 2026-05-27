@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Optional
 
 PORT = int(os.getenv("ANCHOR_PORT", "9878"))
-ANCHOR_FILE = Path(os.getenv("ANCHOR_FILE", "/home/ubuntu/anchors/ops-anchor.json"))
+ANCHOR_FILE = Path(os.getenv("ANCHOR_FILE", str(Path.home() / "anchors" / "ops-anchor.json")))
+
+# System root paths for /systems endpoint
+EITELITE_ROOT = os.getenv("EITELITE_ROOT", str(Path.home() / "eitelite"))
+TICAL_CODE_ROOT = os.getenv("TICAL_CODE_ROOT", str(Path.home() / "tical-code"))
 
 # 内存 worker 状态 (兄弟节点工作状态)
 worker_states: dict = {}
@@ -80,8 +84,8 @@ class AnchorHandler(BaseHTTPRequestHandler):
     
     def _get_systems(self) -> dict:
         """实时统计两个系统的代码量。本地没有时 git clone 来统计"""
-        eite = self._count_py_files("/home/ubuntu/eitelite")
-        tical = self._count_py_files("/home/ubuntu/tical-code")
+        eite = self._count_py_files(EITELITE_ROOT)
+        tical = self._count_py_files(TICAL_CODE_ROOT)
         # eitelite 不完整 → 临时 clone 来统计
         if eite.get("py_files", 0) < 10:
             try:
@@ -241,7 +245,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
 
 def main():
     if not ANCHOR_FILE.exists():
-        fallback = Path("/home/ubuntu/tical-code/anchor.json")
+        fallback = Path(os.getenv("ANCHOR_FALLBACK", str(Path.home() / "tical-code" / "anchor.json")))
         if fallback.exists():
             os.environ["ANCHOR_FILE"] = str(fallback)
     
