@@ -5,6 +5,12 @@ import logging
 
 logger = logging.getLogger("tical-code.formatter")
 
+def format_error(name: str, error: str) -> str:
+    return f"[{name}] error: {error}"
+
+def format_progress(name: str, status: str) -> str:
+    return f"[{name}] {status}"
+
 def format_result(name: str, result: dict) -> str:
     """Tool execution result to one-line summary."""
     if not result:
