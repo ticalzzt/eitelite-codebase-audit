@@ -117,7 +117,7 @@ class Worker:
         # Kael's modules
         w = cfg.get("workspace", ".")
         self.sessions = SessionManager(db_path=str(Path(w) / "sessions.db"))
-        self.compactor = ContextCompactor(max_tokens=6000, keep_recent=6)
+        self.compactor = ContextCompactor(max_tokens=30000, keep_recent=12)
         self.loop_detector = LoopDetector(window_size=30)
         self.reporter = TruthfulReporter(workspace=w)
         self.gate = ProposalGate(timeout_seconds=300)

@@ -55,9 +55,9 @@ class ContextCompactor:
                 msg = messages[i]
                 new_msg = dict(msg)
                 content = new_msg.get("content", "")
-                if new_msg.get("role") == "tool" and len(content) > 500:
+                if new_msg.get("role") == "tool" and len(content) > 2000:
                     new_msg["content"] = (
-                        f"[output truncated: {content[:100]}... ({len(content)} chars total)]"
+                        f"[output truncated: {content[:200]}... ({len(content)} chars total)]"
                     )
                 pruned.append(new_msg)
 

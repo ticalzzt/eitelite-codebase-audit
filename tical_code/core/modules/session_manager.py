@@ -14,7 +14,7 @@ logger = logging.getLogger("tical-code.session_manager")
 class SessionManager:
     """Thread-safe SQLite session store with archival support."""
 
-    MAX_TOOL_CONTENT = 2048
+    MAX_TOOL_CONTENT = 8192
 
     def __init__(self, db_path: str, max_active: int = 100):
         self.db_path = Path(db_path)
@@ -111,7 +111,7 @@ class SessionManager:
             logger.exception("save_messages failed")
             return False
 
-    def load_session(self, session_id: str, max_messages: int = 20) -> list[dict]:
+    def load_session(self, session_id: str, max_messages: int = 30) -> list[dict]:
         try:
             with self.lock:
                 cur = self.conn.cursor()
