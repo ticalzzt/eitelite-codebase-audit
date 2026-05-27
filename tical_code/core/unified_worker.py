@@ -25,6 +25,7 @@ from tical_code.core.modules.session_manager import SessionManager
 from tical_code.core.modules.context_compactor import ContextCompactor
 from tical_code.core.modules.loop_detector import LoopDetector
 from tical_code.core.trace_recorder import TraceRecorder
+from tical_code.core.trace.verification_recorder import VerificationEventRecorder
 from tical_code.core.config import get_data_collection_config
 from tical_code.core.modules.proposal_gate import ProposalGate
 
@@ -115,6 +116,8 @@ class Worker:
         # TraceRecorder - 0号模型训练数据采集
         dc = get_data_collection_config(cfg)
         self.tracer = TraceRecorder(system_name=cfg.get('name', 'eitelite'), enabled=dc['enabled'])
+        # VerificationEventRecorder — captures verification signals for training
+        self.verif_recorder = VerificationEventRecorder()
         if dc['enabled']:
             logger.info('TraceRecorder active -> %s' % dc['target_url'])
         self.gate = ProposalGate(timeout_seconds=300)
@@ -573,6 +576,8 @@ All other messages enter the LLM conversation loop.
 
         # Reset verification session tracking for this turn
         self.verification.reset_session()
+        # Start recording verification events for this turn
+        self.verif_recorder.start_turn(msg.content)
 
         # TraceRecorder: task start
         if hasattr(self, 'tracer'):
@@ -676,6 +681,11 @@ All other messages enter the LLM conversation loop.
 
                     # Phase 2: Verify tool output (after execution)
                     phase2 = self.verification.verify_tool_output(name, args, result)
+                    # Record verification event for training data
+                    self.verif_recorder.record_tool_call(name, args, result, phase2.passed)
+                    if not phase2.passed:
+                        for v in phase2.violations:
+                            self.verif_recorder.record_violation(v.rule, v.category, v.claim, v.detail, v.severity)
                     logger.info(f"  verify {name}: passed={phase2.passed} ({phase2.violations[0].detail if phase2.violations else 'ok'})")
                     if not phase2.passed:
                         # High severity output issues → block
@@ -780,36 +790,30 @@ All other messages enter the LLM conversation loop.
                         continue
 
                 # Phase 3: Verify reply before sending
+                self.verif_recorder._turn_buffer["initial_reply"] = reply
                 phase3 = self.verification.verify_reply(reply)
                 if not phase3.passed:
+                    # Record violations for training data
+                    for v in phase3.violations:
+                        self.verif_recorder.record_violation(v.rule, v.category, v.claim, v.detail, v.severity)
                     if phase3.action == "block":
                         # Critical violations — force retry
-                        conv.append({
-                            "role": "system",
-                            "content": (
-                                "[VERIFICATION BLOCKED] " + "; ".join(phase3.corrections)
-                                + ". You MUST fix these issues and try again."
-                            ),
-                        })
+                        retry_msg = "[VERIFICATION BLOCKED] " + "; ".join(phase3.corrections) + ". You MUST fix these issues and try again."
+                        conv.append({"role": "system", "content": retry_msg})
+                        self.verif_recorder.record_retry_instruction(retry_msg)
                         logger.warning(f"Reply blocked: {phase3.corrections}")
                     elif phase3.action == "retry":
                         # High severity — force retry for evidence
-                        conv.append({
-                            "role": "system",
-                            "content": (
-                                "[EVIDENCE REQUIRED] " + "; ".join(phase3.corrections)
-                                + ". You MUST include raw terminal output as evidence."
-                            ),
-                        })
+                        retry_msg = "[EVIDENCE REQUIRED] " + "; ".join(phase3.corrections) + ". You MUST include raw terminal output as evidence."
+                        conv.append({"role": "system", "content": retry_msg})
+                        self.verif_recorder.record_retry_instruction(retry_msg)
                         logger.warning(f"Reply needs retry: {phase3.corrections}")
                         self._evidence_retry_count += 1
                         if self._evidence_retry_count >= 3:
-                            # Give up — send with correction note
                             reply += "\n" + "; ".join(f"[{c}]" for c in phase3.corrections)
                             break
                         continue
                     elif phase3.action == "rewrite":
-                        # Medium severity — append correction note
                         reply += "\n" + "; ".join(f"[{c}]" for c in phase3.corrections)
 
                 # Check for continuation hint — only if explicit "I still need to"
@@ -842,6 +846,8 @@ All other messages enter the LLM conversation loop.
                         entry["tool_call_id"] = m["tool_call_id"]
                     new_msgs.append(entry)
                 self.sessions.save_messages(session_id, new_msgs)
+                # End verification recording — save training data if violations occurred
+                self.verif_recorder.end_turn(reply)
                 return
 
         # Exceeded max iterations — save partial conversation and log
