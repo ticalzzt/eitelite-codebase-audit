@@ -40,6 +40,19 @@ class EiteVerifyEngine:
         "忽略所有指令",
     ]
 
+    # Paths outside workspace that are always allowed
+    SAFE_WRITE_PATHS: list[str] = [
+        "/tmp",
+        "/var/tmp",
+    ]
+    SAFE_READ_PATHS: list[str] = [
+        "/tmp",
+        "/var/tmp",
+        "/proc",
+        "/sys",
+        "/etc",
+    ]
+
     def __init__(self, identity_id: str, workspace: str = "."):
         self._identity_id = identity_id
         self._workspace = str(Path(workspace).resolve())
@@ -150,13 +163,17 @@ class EiteVerifyEngine:
         if not path:
             return {"verified": True, "verify_detail": "no path"}
 
-        resolved = self._resolve_path(path)
+        resolved = self._resolve_path(path, allowed_outside=self.SAFE_WRITE_PATHS)
         if resolved is None:
             return self._reject(entry, f"Path outside workspace: {path}")
 
         # Forbid writing to EITE's own files
         if "eite" in resolved.parts:
             return self._reject(entry, f"Cannot write to EITE directory: {path}")
+
+        # Verify the file was actually written (if result claims success)
+        if not resolved.exists():
+            return self._reject(entry, f"File does not exist after write: {path}")
 
         return {"verified": True, "verify_detail": "ok"}
 
@@ -165,7 +182,7 @@ class EiteVerifyEngine:
         if not path:
             return {"verified": True, "verify_detail": "no path"}
 
-        resolved = self._resolve_path(path)
+        resolved = self._resolve_path(path, allowed_outside=self.SAFE_READ_PATHS)
         if resolved is None:
             return self._reject(entry, f"Path outside workspace: {path}")
 
@@ -173,13 +190,26 @@ class EiteVerifyEngine:
 
     # ── Helpers ───────────────────────────────────────────────────
 
-    def _resolve_path(self, path: str) -> Path | None:
-        """解析路径并检查是否在工作区内。"""
+    def _resolve_path(self, path: str, allowed_outside: list[str] | None = None) -> Path | None:
+        """Resolve path and check if it's in workspace or allowed directories."""
         try:
             p = Path(path).expanduser().resolve()
             workspace = Path(self._workspace).resolve()
-            p.relative_to(workspace)
-            return p
+            # Allow if inside workspace
+            try:
+                p.relative_to(workspace)
+                return p
+            except ValueError:
+                pass
+            # Allow if inside any whitelisted directory
+            if allowed_outside:
+                for safe in allowed_outside:
+                    try:
+                        p.relative_to(Path(safe))
+                        return p
+                    except ValueError:
+                        continue
+            return None
         except (ValueError, OSError, RuntimeError):
             return None
 
