@@ -390,17 +390,6 @@ def exec_memory_load(args: dict = None, base_dir: str = "") -> dict:
     except Exception:
         return {"entries": {}}
 
-    try:
-        from .memory_sense import conversation_search
-    except ImportError:
-        return {"error": "memory_sense module unavailable"}
-    query = args.get("query", "")
-    if not query:
-        return {"error": "Query cannot be empty"}
-    session_id = args.get("session_id")
-    top_k = min(int(args.get("top_k", 5)), 20)
-    results = conversation_search(query, session_id=session_id, top_k=top_k)
-    return {"results": results, "total": len(results)}
 
 
 def exec_chat_send(args: dict) -> dict:
@@ -504,8 +493,8 @@ def exec_file_search(args: dict) -> dict:
     matches = []
     try:
         matches = glob.glob(f"{full_dir}/**/{pattern}", recursive=True)
-    except Exception:
-        pass
+    except Exception as e:
+        return {"error": f"Glob failed: {e}"}
     if content_pattern:
         import subprocess
         grep_r = subprocess.run(
@@ -540,7 +529,7 @@ def exec_list_dir(args: dict) -> dict:
             st = _os.stat(fp)
             entries.append({"name": f, "is_dir": _os.path.isdir(fp),
                            "size": st.st_size, "modified": int(st.st_mtime)})
-        except:
+        except OSError:
             entries.append({"name": f, "is_dir": False, "size": 0, "modified": 0})
     return {"files": entries, "path": path, "total": len(entries)}
 
@@ -587,8 +576,8 @@ def exec_memory(args: dict) -> dict:
             del mem["entries"][k]
     try:
         mem_file.write_text(json.dumps(mem, ensure_ascii=False, indent=2))
-    except Exception:
-        pass
+    except Exception as e:
+        return {"ok": False, "error": f"Memory write failed: {e}"}
     return {"ok": True, "key": key}
 
 
@@ -613,7 +602,6 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "memory_save": lambda a: exec_memory_save(a, base_dir),
         "memory_load": lambda a: exec_memory_load(a, base_dir),
         "state_save": lambda a: exec_state_save(a, base_dir),
-        # conv_search removed
         "chat_send": exec_chat_send,
         "restart_self": exec_restart_self,
         "web_fetch": exec_web_fetch,

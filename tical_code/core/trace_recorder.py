@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-TraceRecorder — 0号模型训练数据采集器
+TraceRecorder — Model Zero training data collector
 
-嵌入 Worker 的工具执行循环，记录每次任务执行的完整轨迹。
-不干涉执行逻辑，只做"录音机"。
+Embedded in Worker's tool execution loop, records complete traces of each task.
+Does not interfere with execution logic, acts as a 'recorder' only.
 
-输出到 training_data/eite_trace/ 目录，
-格式与 data_pipeline.py 的 benchmark_to_samples 输出一致。
+Outputs to training_data/eite_trace/ directory,
+format compatible with data_pipeline.py's benchmark_to_samples output.
 
-用法（由 unified_worker.py 自动调用）:
+Usage (called automatically by unified_worker.py):
   from eite_test.trace_recorder import TraceRecorder
   rec = TraceRecorder()
   rec.start_task(task_id, prompt, system_name)
@@ -23,23 +23,23 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# ─── 路径: 优先取 EITE_DATA_ROOT, 否则默认取 eitelite / tical-code 项目根 ───
+# ─── Path: EITE_DATA_ROOT env var, or default to project root ───
 
 def _get_training_dir() -> Path:
-    """训练数据目录, 受 EITE_DATA_ROOT 环境变量控制"""
+    """Training data directory, controlled by EITE_DATA_ROOT env var"""
     root = Path(os.getenv("EITE_DATA_ROOT", 
                Path(__file__).resolve().parent.parent))
     return root / "training_data" / "eite_trace"
 
 
-# ─── 单次任务轨迹 ───
+# ─── Single task trace ───
 
 class TaskTrace:
-    """记录一次任务从开始到结束的所有工具调用"""
+    """Record all tool calls for a single task from start to end"""
     
     def __init__(self, task_id: str, prompt: str, system: str):
         self.task_id = task_id
-        self.prompt = prompt[:500]          # 截断防止过大
+        self.prompt = prompt[:500]          # truncate to prevent bloat
         self.system = system
         self.tools: list = []
         self.start_time = time.time()
@@ -47,10 +47,10 @@ class TaskTrace:
         self.success = False
     
     def record_tool(self, name: str, args: dict, result: dict, verified: bool):
-        """记录一次工具调用 (在 execute() + eite.verify() 之后调用)"""
+        """Record one tool call (called after execute() + eite.verify())"""
         entry = {
             "tool": name,
-            "args_safe": _sanitize_args(name, args),   # 脱敏敏感参数
+            "args_safe": _sanitize_args(name, args),   # sanitize sensitive args
             "exit_code": result.get("exit_code", result.get("verified") is True),
             "eite_verified": verified,
             "timestamp": time.time(),
@@ -62,7 +62,7 @@ class TaskTrace:
         self.end_time = time.time()
     
     def to_sample(self) -> dict:
-        """转为训练样本格式 (与 data_pipeline.py 兼容)"""
+        """Convert to training sample format (compatible with data_pipeline.py)"""
         raw = f"{self.system}_{self.task_id}_{len(self.tools)}"
         return {
             "id": hashlib.sha256(raw.encode()).hexdigest()[:12],
@@ -83,35 +83,35 @@ class TaskTrace:
         }
 
 
-# ─── 敏感参数脱敏 ───
+# ─── Sensitive argument sanitization ───
 
 _SENSITIVE_KEYS = {"token", "key", "password", "secret", "auth", "api_key", 
                    "private_key", "credential", "bearer", "authorization"}
 
 def _sanitize_args(tool_name: str, args: dict) -> dict:
-    """脱敏: 替换敏感字段的值, 保留路径和命令"""
+    """Sanitize: replace sensitive field values, keep paths and commands"""
     safe = {}
     for k, v in args.items():
         if any(s in k.lower() for s in _SENSITIVE_KEYS):
             safe[k] = "***"
         elif tool_name == "file_write" and k == "content":
-            safe[k] = f"<{len(str(v))} bytes>"  # 不记录文件内容
+            safe[k] = f"<{len(str(v))} bytes>"  # do not record file contents
         elif tool_name == "bash" and k == "command":
-            safe[k] = str(v)[:200]                # 截断长命令
+            safe[k] = str(v)[:200]                # truncate long commands
         else:
             safe[k] = str(v)[:200]
     return safe
 
 
-    # ─── 采集器 (单例) ───
+    # ─── Collector (singleton) ───
 
 class TraceRecorder:
     """
-    嵌入 Worker 循环的轨迹采集器。
-    每个 Worker 实例持有一个 TraceRecorder。
+    Trace collector embedded in Worker loop.
+    Each Worker instance holds one TraceRecorder.
     
-    记录到本地的同时，攒够 batch_size 条后自动 POST 到 target_url。
-    如果测试站端点还没就绪，数据安全留在本地，不会丢。
+    Records locally, auto-POSTs to target_url after batch_size samples accumulate.
+    If the test endpoint is not ready, data stays safely local and is never lost.
     """
     
     def __init__(self, system_name: str = "eitelite", enabled: bool = True,
@@ -122,26 +122,26 @@ class TraceRecorder:
         self.batch_size = batch_size
         self._trace: Optional[TaskTrace] = None
         self._output_dir = _get_training_dir()
-        self._pending_count = 0  # 累计待上传条数
+        self._pending_count = 0  # accumulated pending upload count
         if enabled:
             self._output_dir.mkdir(parents=True, exist_ok=True)
     
-    # ─── 三阶段钩子 ───
+    # ─── Three-phase hooks ───
     
     def on_task_start(self, task_id: str, prompt: str = ""):
-        """Worker 开始处理消息时调用"""
+        """Called when Worker starts processing a message"""
         if not self.enabled:
             return
         self._trace = TaskTrace(task_id, prompt, self.system)
     
     def on_tool_result(self, tool_name: str, args: dict, result: dict, verified: bool):
-        """每次工具执行并验证后调用 (在 execute() + eite.verify() 之后)"""
+        """Called after each tool execution and verification (after execute() + eite.verify())"""
         if not self.enabled or self._trace is None:
             return
         self._trace.record_tool(tool_name, args, result, verified)
     
     def on_task_end(self, success: bool):
-        """Worker 完成一轮处理后调用"""
+        """Called when Worker finishes one processing round"""
         if not self.enabled or self._trace is None:
             return
         self._trace.finish(success)
@@ -150,14 +150,14 @@ class TraceRecorder:
         self._pending_count += 1
         self._trace = None
         
-        # 攒够批次数 → 尝试上传
+        # batch_size reached → try upload
         if self.target_url and self._pending_count >= self.batch_size:
             self.flush()
     
-    # ─── 写入 ───
+    # ─── Write ───
     
     def _write(self, sample: dict):
-        """追加写入 .jsonl 文件"""
+        """Append to .jsonl file"""
         if not self.enabled:
             return
         date = time.strftime("%Y%m%d")
@@ -165,20 +165,20 @@ class TraceRecorder:
         with open(path, "a") as f:
             f.write(json.dumps(sample, ensure_ascii=False) + "\n")
 
-    # ─── 批量上传 ───
+    # ─── Batch upload ───
 
     def flush(self):
         """
-        将本地缓存的轨迹数据批量 POST 到 target_url。
-        成功后重置 pending_count。
-        失败时保留数据在本地，下次 flush() 重试。
+        Batch-POST locally cached trace data to target_url.
+        Resets pending_count on success.
+        On failure, data stays local for next flush() retry.
         """
         if not self.target_url or self._pending_count == 0:
             return
         
         samples = []
         try:
-            # 从当日文件读所有未上传样本
+            # Read all unuploaded samples from today's file
             date = time.strftime("%Y%m%d")
             path = self._output_dir / f"trace_{date}.jsonl"
             if not path.exists():
@@ -196,7 +196,7 @@ class TraceRecorder:
                 self._pending_count = 0
                 return
             
-            # POST 发送
+            # POST send
             import urllib.request
             body = json.dumps(samples, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(
@@ -216,22 +216,21 @@ class TraceRecorder:
                         f"flushed {len(samples)} traces to {self.target_url}"
                     )
         except Exception as e:
-            # 任何失败都不清 pending_count, 下次重试
+            # On any failure, keep pending_count for next retry
             import logging
             logging.getLogger("tical-code.trace").warning(
                 f"flush failed ({len(samples) if 'samples' in dir() else '?'} traces): {e}"
             )
 
 
-# ─── 直接跑也可以: 手动调用示范 ───
+# ─── Direct run: manual usage example ───
 
 if __name__ == "__main__":
-    # 测试
     rec = TraceRecorder(system_name="test", enabled=True)
-    rec.on_task_start("test_task_001", "写一个斐波那契函数")
+    rec.on_task_start("test_task_001", "Write a Fibonacci function")
     rec.on_tool_result("file_write", {"path": "/tmp/fib.py", "content": "def fib(n):..."}, {"exit_code": 0}, True)
     rec.on_tool_result("bash", {"command": "python3 /tmp/fib.py"}, {"exit_code": 0, "stdout": "55"}, True)
     rec.on_task_end(True)
-    print(f"测试样本已写入: {_get_training_dir()}")
+    print(f"Test samples written to: {_get_training_dir()}")
     for f in _get_training_dir().glob("*.jsonl"):
         print(f"  {f.name}")

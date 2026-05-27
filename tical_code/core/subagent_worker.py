@@ -67,10 +67,17 @@ def main():
     # Create LLM provider
     try:
         from tical_code.core.llm_interface import DeepSeekProvider
+        # Model: AI_MODEL > DEEPSEEK_MODEL > OPENAI_MODEL > default
+        _model = (
+            os.environ.get("AI_MODEL", "")
+            or os.environ.get("DEEPSEEK_MODEL", "")
+            or os.environ.get("OPENAI_MODEL", "")
+            or "deepseek-chat"
+        )
         llm = DeepSeekProvider(
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-            model=os.environ.get("OPENAI_MODEL", "deepseek-chat"),
+            api_key=os.environ.get("OPENAI_API_KEY", "") or os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url=os.environ.get("OPENAI_BASE_URL", "") or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            model=_model,
         )
     except Exception as e:
         result = {"success": False, "error": f"LLM init failed: {e}"}

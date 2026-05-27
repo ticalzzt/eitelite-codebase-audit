@@ -1,14 +1,15 @@
-"""EITElite / tical-code 锚点 HTTP 服务
+"""EITElite / tical-code anchor HTTP service
 
-Worker 通过此服务读写共享状态:
-  - 锚点数据 (ops-anchor.json + ai_workers)
-  - Worker 在线状态注册
-  - 工作任务队列
-  - 兄弟节点工作状态
+Workers read/write shared state through this service:
+  - Anchor data (ops-anchor.json + ai_workers)
+  - Worker online status registration
+  - Task queue
+  - Sibling node work states
 
 所有路径支持 /anchor 前缀 (nginx 透传)。
 """
 import json
+import logging
 import os
 import time
 import threading
@@ -16,14 +17,21 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
 
-PORT = int(os.getenv("ANCHOR_PORT", "9878"))
-ANCHOR_FILE = Path(os.getenv("ANCHOR_FILE", "/home/ubuntu/anchors/ops-anchor.json"))
+logger = logging.getLogger("tical-code.anchor")
 
-# 内存 worker 状态 (兄弟节点工作状态)
+PORT = int(os.getenv("ANCHOR_PORT", "9878"))
+ANCHOR_FILE = Path(os.getenv("ANCHOR_FILE", str(Path.home() / "anchors" / "ops-anchor.json")))
+
+# System root paths for /systems endpoint
+EITELITE_ROOT = os.getenv("EITELITE_ROOT", str(Path.home() / "eitelite"))
+TICAL_CODE_ROOT = os.getenv("TICAL_CODE_ROOT", str(Path.home() / "tical-code"))
+
+# In-memory worker states (sibling node work states)
 worker_states: dict = {}
 state_lock = threading.Lock()
 
-# 任务队列
+# Task queue
+MAX_QUEUE_SIZE = 100
 task_queue: list = []
 task_lock = threading.Lock()
 task_counter = 0
@@ -34,28 +42,28 @@ class AnchorHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
     
-    # ─── 路径归一化: 去掉 /anchor 前缀 ───
+    # ─── Path normalization: strip /anchor prefix ───
     
     def _normalize(self, raw_path: str) -> str:
-        """把 /anchor/work 变成 /work, /anchor/task/dequeue 变成 /task/dequeue"""
+        """Convert /anchor/work to /work, /anchor/task/dequeue to /task/dequeue"""
         p = raw_path.split("?")[0].rstrip("/")
-        # Strip /anchor prefix (nginx 透传)
+        # Strip /anchor prefix (nginx passthrough)
         if p.startswith("/anchor"):
             p = p[len("/anchor"):] or "/"
         return p
     
-    # ─── 数据加载 ───
+    # ─── Data loading ───
     
     def _load_anchor(self) -> dict:
         if ANCHOR_FILE.exists():
             try:
                 return json.loads(ANCHOR_FILE.read_text())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"_load_anchor parse error: {e}")
         return {"version": "unknown"}
     
     def _count_py_files(self, root_dir: str) -> dict:
-        """动态统计: 扫描目录下的 .py 文件数和代码行数"""
+        """Live stats: scan directory for .py file count and line count"""
         import subprocess as _sp
         d = Path(root_dir)
         if not d.exists():
@@ -71,18 +79,18 @@ class AnchorHandler(BaseHTTPRequestHandler):
             for f in files:
                 try:
                     total_lines += len(Path(f).read_text().split("\n"))
-                except:
-                    pass
+                except Exception:
+                    pass  # unreadable file, skip
             return {"py_files": len(files), "py_lines": total_lines,
                     "path": str(d), "status": "ok"}
         except Exception as e:
             return {"py_files": 0, "py_lines": 0, "path": root_dir, "status": f"error: {e}"}
     
     def _get_systems(self) -> dict:
-        """实时统计两个系统的代码量。本地没有时 git clone 来统计"""
-        eite = self._count_py_files("/home/ubuntu/eitelite")
-        tical = self._count_py_files("/home/ubuntu/tical-code")
-        # eitelite 不完整 → 临时 clone 来统计
+        """Live stats for both systems. Falls back to git clone if local repo incomplete"""
+        eite = self._count_py_files(EITELITE_ROOT)
+        tical = self._count_py_files(TICAL_CODE_ROOT)
+        # eitelite incomplete → temp clone for counting
         if eite.get("py_files", 0) < 10:
             try:
                 import subprocess as _sp, tempfile
@@ -92,9 +100,9 @@ class AnchorHandler(BaseHTTPRequestHandler):
                     tmp + "/eitelite"], capture_output=True, timeout=60)
                 eite = self._count_py_files(tmp + "/eitelite")
                 _sp.run(["rm", "-rf", tmp], capture_output=True)
-            except:
-                pass
-        # tical-code 不完整 → 同上
+            except Exception as e:
+                logger.debug(f"clone eitelite for count failed: {e}")
+        # tical-code incomplete → same
         if tical.get("py_files", 0) < 10:
             try:
                 import subprocess as _sp, tempfile
@@ -104,16 +112,16 @@ class AnchorHandler(BaseHTTPRequestHandler):
                     tmp + "/tical-code"], capture_output=True, timeout=60)
                 tical = self._count_py_files(tmp + "/tical-code")
                 _sp.run(["rm", "-rf", tmp], capture_output=True)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"clone tical-code for count failed: {e}")
         return {"eitelite": eite, "tical-code": tical}
     
     def _worker_list(self) -> dict:
-        """返回兄弟节点工作状态 (用于 _anchor_api('anchor/work'))"""
+        """Return sibling node work states (for _anchor_api('anchor/work'))"""
         with state_lock:
             return dict(worker_states)
     
-    # ─── 响应辅助 ───
+    # ─── Response helpers ───
     
     def _send_json(self, data: dict, code: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -135,23 +143,23 @@ class AnchorHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self._normalize(self.path)
         
-        # 根路径 → 返回完整锚点数据
+        # Root path → return full anchor data
         if path in ("", "/"):
             data = self._load_anchor()
             with state_lock:
                 data["_workers"] = dict(worker_states)
             return self._send_json(data)
         
-        # /work 或 /workers → 返回兄弟节点工作状态
+        # /work or /workers → return sibling work states
         if path in ("/work", "/workers"):
             return self._send_json(self._worker_list())
         
-        # /task/list → 返回任务队列
+        # /task/list → return task queue
         if path == "/task/list":
             with task_lock:
                 return self._send_json({"tasks": list(task_queue)})
         
-        # /systems → 动态统计两个系统的代码量
+        # /systems → live stats for both systems
         if path == "/systems":
             return self._send_json(self._get_systems())
         
@@ -164,7 +172,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         name = body.get("name", body.get("worker", "unknown"))
         
-        # /register → Worker 注册/心跳
+        # /register → Worker registration/heartbeat
         if path in ("/register", "/", "/anchor"):
             with state_lock:
                 worker_states[name] = {
@@ -177,7 +185,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 }
             return self._send_json({"ok": True, "name": name})
         
-        # /work → 更新工作状态 (同 /register)
+        # /work → update work status (same as /register)
         if path == "/work":
             with state_lock:
                 if name in worker_states:
@@ -197,7 +205,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
                     }
             return self._send_json({"ok": True, "name": name})
         
-        # /task/enqueue → 入队
+        # /task/enqueue → enqueue task
         if path == "/task/enqueue":
             global task_counter
             with task_lock:
@@ -213,7 +221,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
                 })
             return self._send_json({"ok": True, "task_id": task_id})
         
-        # /task/dequeue → 出队 (标记为 running, 不移除)
+        # /task/dequeue → dequeue (mark as running, do not remove)
         if path == "/task/dequeue":
             worker = body.get("worker", "")
             with task_lock:
@@ -225,7 +233,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
                         return self._send_json({"ok": True, "task": t})
             return self._send_json({"ok": True, "task": None})
         
-        # /task/complete → 标记为 done (不移除)
+        # /task/complete → mark as done (do not remove)
         if path == "/task/complete":
             task_id = body.get("task_id", "")
             with task_lock:
@@ -234,6 +242,11 @@ class AnchorHandler(BaseHTTPRequestHandler):
                         t["status"] = "done"
                         t["completed_at"] = time.time()
                         break
+                # Evict old completed tasks to prevent memory leak
+                if len(task_queue) > MAX_QUEUE_SIZE:
+                    task_queue[:] = [t for t in task_queue
+                                     if t["status"] != "done"
+                                     or time.time() - t.get("completed_at", 0) < 3600]
             return self._send_json({"ok": True})
         
         self._send_json({"error": "not_found"}, 404)
@@ -241,7 +254,7 @@ class AnchorHandler(BaseHTTPRequestHandler):
 
 def main():
     if not ANCHOR_FILE.exists():
-        fallback = Path("/home/ubuntu/tical-code/anchor.json")
+        fallback = Path(os.getenv("ANCHOR_FALLBACK", str(Path.home() / "tical-code" / "anchor.json")))
         if fallback.exists():
             os.environ["ANCHOR_FILE"] = str(fallback)
     

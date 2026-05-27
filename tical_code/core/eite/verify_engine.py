@@ -1,17 +1,20 @@
 """
-EITE验证引擎 v0.4 — 真实的工具验证和回复扫描引擎。
-替换之前 _EiteVerifyWrapper 的空壳实现。
+EITE Verify Engine v0.4 — real tool verification and reply scanning engine.
+Replaces the previous _EiteVerifyWrapper stub implementation.
 """
 import json
+import logging
 import os
 import re
 from pathlib import Path
 
+logger = logging.getLogger("tical-code.eite.verify")
+
 
 class EiteVerifyEngine:
-    """EITE 验证引擎：对工具调用和回复进行安全验证。
+    """EITE Verify Engine: security verification for tool calls and replies.
 
-    提供给 unified_worker.py 的 self.eite 使用，接口：
+    Used by unified_worker.py as self.eite, interface:
     - get_identity_marker() -> str
     - verify_tool_result(name, args, result) -> {"verified": bool, "verify_detail": str}
     - reset_session()
@@ -37,6 +40,19 @@ class EiteVerifyEngine:
         "忽略所有指令",
     ]
 
+    # Paths outside workspace that are always allowed
+    SAFE_WRITE_PATHS: list[str] = [
+        "/tmp",
+        "/var/tmp",
+    ]
+    SAFE_READ_PATHS: list[str] = [
+        "/tmp",
+        "/var/tmp",
+        "/proc",
+        "/sys",
+        "/etc",
+    ]
+
     def __init__(self, identity_id: str, workspace: str = "."):
         self._identity_id = identity_id
         self._workspace = str(Path(workspace).resolve())
@@ -51,7 +67,7 @@ class EiteVerifyEngine:
         self._session_tools = []
 
     def verify_tool_result(self, name: str, args: dict, result: dict) -> dict:
-        """验证工具调用结果。返回 {"verified": bool, "verify_detail": str}。"""
+        """Verify tool call result. Returns {"verified": bool, "verify_detail": str}."""
         entry = {
             "tool": name,
             "args": self._sanitize(args),
@@ -60,42 +76,42 @@ class EiteVerifyEngine:
         }
         self._session_tools.append(entry)
 
-        # 1) 拦截禁止工具
+        # 1) Block forbidden tools
         if name in self.BLOCKED_TOOLS:
             return self._reject(entry, f"Tool '{name}' is blocked by EITE policy")
 
-        # 2) bash 安全检查
+        # 2) bash safety check
         if name == "bash":
             result = self._verify_bash(args, entry)
             if not result["verified"]:
                 return result
 
-        # 3) file_write 安全检查
+        # 3) file_write safety check
         if name == "file_write":
             result = self._verify_file_write(args, entry)
             if not result["verified"]:
                 return result
 
-        # 4) file_read 安全检查
+        # 4) file_read safety check
         if name == "file_read":
             result = self._verify_file_read(args, entry)
             if not result["verified"]:
                 return result
 
-        # 5) 工具执行本身是否返回错误
+        # 5) Check if tool execution returned error
         if isinstance(result, dict) and "error" in result:
             err = str(result["error"])[:200]
             return self._reject(entry, f"Tool returned error: {err}")
 
-        # 6) EITE check 模块规则匹配
+        # 6) EITE check module rule matching
         try:
             from .check import check as _eite_check
             check_result = _eite_check(json.dumps({"tool": name, "args": args}))
             if check_result.get("action") == "block":
                 return self._reject(entry,
                     f"Blocked by EITE rule: {check_result.get('reason', '?')}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"EITE check module error: {e}")
 
         return {"verified": True, "verify_detail": "ok"}
 
@@ -124,14 +140,14 @@ class EiteVerifyEngine:
         if not cmd:
             return {"verified": True, "verify_detail": "empty command"}
 
-        # 复用 tool_executor 的安全检查
+        # Reuse tool_executor's safety check
         try:
             from tical_code.core.tool_executor import _bash_safety_check
             block_reason = _bash_safety_check(cmd)
             if block_reason is not None:
                 return self._reject(entry, block_reason)
         except ImportError:
-            # tool_executor 不可用，退回到基础正则检查
+            # tool_executor unavailable, falling back to basic regex check
             pass
 
         # 基础检查：黑名单关键词
@@ -147,13 +163,17 @@ class EiteVerifyEngine:
         if not path:
             return {"verified": True, "verify_detail": "no path"}
 
-        resolved = self._resolve_path(path)
+        resolved = self._resolve_path(path, allowed_outside=self.SAFE_WRITE_PATHS)
         if resolved is None:
             return self._reject(entry, f"Path outside workspace: {path}")
 
-        # 禁止写 EITE 自身文件
+        # Forbid writing to EITE's own files
         if "eite" in resolved.parts:
             return self._reject(entry, f"Cannot write to EITE directory: {path}")
+
+        # Verify the file was actually written (if result claims success)
+        if not resolved.exists():
+            return self._reject(entry, f"File does not exist after write: {path}")
 
         return {"verified": True, "verify_detail": "ok"}
 
@@ -162,7 +182,7 @@ class EiteVerifyEngine:
         if not path:
             return {"verified": True, "verify_detail": "no path"}
 
-        resolved = self._resolve_path(path)
+        resolved = self._resolve_path(path, allowed_outside=self.SAFE_READ_PATHS)
         if resolved is None:
             return self._reject(entry, f"Path outside workspace: {path}")
 
@@ -170,13 +190,26 @@ class EiteVerifyEngine:
 
     # ── Helpers ───────────────────────────────────────────────────
 
-    def _resolve_path(self, path: str) -> Path | None:
-        """解析路径并检查是否在工作区内。"""
+    def _resolve_path(self, path: str, allowed_outside: list[str] | None = None) -> Path | None:
+        """Resolve path and check if it's in workspace or allowed directories."""
         try:
             p = Path(path).expanduser().resolve()
             workspace = Path(self._workspace).resolve()
-            p.relative_to(workspace)
-            return p
+            # Allow if inside workspace
+            try:
+                p.relative_to(workspace)
+                return p
+            except ValueError:
+                pass
+            # Allow if inside any whitelisted directory
+            if allowed_outside:
+                for safe in allowed_outside:
+                    try:
+                        p.relative_to(Path(safe))
+                        return p
+                    except ValueError:
+                        continue
+            return None
         except (ValueError, OSError, RuntimeError):
             return None
 
@@ -187,7 +220,7 @@ class EiteVerifyEngine:
 
     @staticmethod
     def _sanitize(args: dict) -> dict:
-        """脱敏：仅保留类型和前 100 字符的值。"""
+        """Sanitize: keep only type and first 100 chars of value."""
         safe = {}
         for k, v in args.items():
             vs = str(v)
