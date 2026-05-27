@@ -418,7 +418,10 @@ def t9_no_reply_alias():
 
 @test("clarify.py 无 format_clarify_questions", "T9")
 def t9_no_clarify_dead():
-    src = (ROOT / "tical_code" / "core" / "clarify.py").read_text()
+    clarify_path = ROOT / "tical_code" / "core" / "clarify.py"
+    if not clarify_path.exists():
+        return  # File deleted as dead code — pass
+    src = clarify_path.read_text()
     assert "def format_clarify_questions" not in src
 
 @test("核心文件已删除确认", "T9")
@@ -426,9 +429,15 @@ def t9_deleted_files():
     dead = [
         ROOT / "tical_code" / "core" / "verify.py",
         ROOT / "tical_code" / "core" / "heartbeat.py",
+        ROOT / "tical_code" / "core" / "clarify.py",
+        ROOT / "tical_code" / "core" / "cron_scheduler.py",
+        ROOT / "tical_code" / "core" / "llm_backend.py",
+        ROOT / "tical_code" / "core" / "memory_store.py",
+        ROOT / "tical_code" / "core" / "sandbox.py",
+        ROOT / "tical_code" / "core" / "subagent_interface.py",
     ]
     for f in dead:
-        assert not f.exists(), f"死文件仍存在: {f}"
+        assert not f.exists(), f"dead file still exists: {f.name}"
     # 确认 tical-code 特有文件
     if (ROOT / "tical_code" / "core" / "verify.py").parent.exists():
         pass  # parent dir always exists
@@ -443,7 +452,10 @@ def t9_no_future_annotations():
 
 @test("cron_scheduler.py 无 DEFAULT_TASK_TIMEOUT", "T9")
 def t9_no_task_timeout():
-    src = (ROOT / "tical_code" / "core" / "cron_scheduler.py").read_text()
+    cron_path = ROOT / "tical_code" / "core" / "cron_scheduler.py"
+    if not cron_path.exists():
+        return  # File deleted as dead code — pass
+    src = cron_path.read_text()
     assert "DEFAULT_TASK_TIMEOUT" not in src
 
 # ============================================================

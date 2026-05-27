@@ -87,11 +87,11 @@ def validate_path_safety(
 
     # 空路径检查
     if not path or not path.strip():
-        return False, "路径为空"
+        return False, "empty path"
 
     # 路径长度检查
     if len(path) > cfg.max_path_length:
-        return False, f"路径过长: {len(path)} > {cfg.max_path_length}"
+        return False, f"path too long: {len(path)} > {cfg.max_path_length}"
 
     # 检查路径遍历（原始路径中的..）
     # 注意：不直接拒绝..，而是检查resolve后是否跳出
@@ -102,7 +102,7 @@ def validate_path_safety(
         # 绝对路径必须在allowed_dirs内
         abs_resolved = os.path.realpath(normalized)
         if not _is_path_in_allowed_dirs(abs_resolved, dirs):
-            return False, f"绝对路径不在允许目录内: {normalized}"
+            return False, f"absolute path outside allowed dirs: {normalized}"
 
     # 符号链接检查（加锁防止TOCTOU）
     with _path_lock:
@@ -118,14 +118,14 @@ def validate_path_safety(
                 # 符号链接的resolve结果必须在允许目录内
                 if not _is_path_in_allowed_dirs(resolved, dirs):
                     return False, (
-                        f"符号链接指向允许目录外: "
+                        f"symlink points outside allowed dirs: "
                         f"path={normalized} → resolved={resolved}"
                     )
 
         # 最终检查：resolve后的路径必须在允许目录内
         if not _is_path_in_allowed_dirs(resolved, dirs):
             return False, (
-                f"路径解析后超出允许目录: "
+                f"resolved path outside allowed dirs: "
                 f"path={normalized} → resolved={resolved}"
             )
 
@@ -152,7 +152,7 @@ def resolve_and_validate(
     """
     safe, reason = validate_path_safety(path, allowed_dirs, config)
     if not safe:
-        logger.warning(f"[Security] 路径安全检查失败: {reason}")
+        logger.warning(f"[Security] path check failed: {reason}")
         return None, False
 
     with _path_lock:
@@ -208,7 +208,7 @@ def _contains_symlink(path: str) -> bool:
             if os.path.islink(current):
                 return True
     except (OSError, ValueError):
-        logger.debug("security_baseline: 符号链接检查异常，视为安全")
+        logger.debug("security_baseline: symlink check exception, treating as safe")
 
     return False
 
@@ -291,35 +291,35 @@ def validate_url(
 
     # 空URL检查
     if not url or not url.strip():
-        return False, "URL为空"
+        return False, "empty URL"
 
     # 解析URL
     try:
         parsed = urlparse(url)
     except Exception as e:
-        return False, f"URL解析失败: {e}"
+        return False, f"URL parse failed: {e}"
 
     # 协议检查
     scheme = parsed.scheme.lower()
     if not scheme:
-        return False, "URL缺少协议"
+        return False, "URL missing scheme"
 
     if scheme in _DANGEROUS_SCHEMES:
-        return False, f"危险协议: {scheme}://"
+        return False, f"dangerous scheme: {scheme}://"
 
     if scheme not in cfg.allowed_schemes:
-        return False, f"不允许的协议: {scheme}://（允许: {', '.join(sorted(cfg.allowed_schemes))}）"
+        return False, f"disallowed scheme: {scheme}:// (allowed: {', '.join(sorted(cfg.allowed_schemes))})"
 
     # 主机名检查
     hostname = parsed.hostname
     if not hostname:
-        return False, "URL缺少主机名"
+        return False, "URL missing hostname"
 
     # 域名黑名单
     hostname_lower = hostname.lower()
     for blocked in cfg.domain_blacklist:
         if hostname_lower == blocked.lower() or hostname_lower.endswith('.' + blocked.lower()):
-            return False, f"域名在黑名单中: {hostname}"
+            return False, f"domain in blacklist: {hostname}"
 
     # 域名白名单（如果设置了）
     if cfg.domain_whitelist:
@@ -329,7 +329,7 @@ def validate_url(
                 allowed = True
                 break
         if not allowed:
-            return False, f"域名不在白名单中: {hostname}"
+            return False, f"domain not in whitelist: {hostname}"
 
     # 私有IP检查（直接IP地址）
     if not cfg.allow_private_ip:
@@ -346,12 +346,12 @@ def validate_url(
                 ip_str = sockaddr[0]
                 is_private, reason = _check_ip_private(ip_str)
                 if is_private:
-                    return False, f"DNS重绑定防护: 域名 {hostname} 解析到私有IP {ip_str}"
+                    return False, f"DNS rebinding protection: {hostname} resolved to private IP {ip_str}"
         except socket.gaierror:
             # 域名无法解析，不阻止（可能是临时DNS问题）
-            logger.debug(f"[Security] DNS解析失败: {hostname}")
+            logger.debug(f"[Security] DNS resolution failed: {hostname}")
         except Exception as e:
-            logger.debug(f"[Security] DNS检查异常: {hostname}, {e}")
+            logger.debug(f"[Security] DNS check error: {hostname}, {e}")
 
     return True, ""
 
@@ -375,13 +375,13 @@ def _check_ip_private(ip_str: str) -> Tuple[bool, str]:
     if isinstance(ip, ipaddress.IPv4Address):
         for network in _PRIVATE_IP_RANGES:
             if ip in network:
-                return True, f"私有IP地址: {ip_str}（网络: {network}）"
+                return True, f"private IP: {ip_str} (network: {network})"
 
     # 检查IPv6私有范围
     if isinstance(ip, ipaddress.IPv6Address):
         for network in _PRIVATE_IP_RANGES_V6:
             if ip in network:
-                return True, f"私有IPv6地址: {ip_str}（网络: {network}）"
+                return True, f"private IPv6: {ip_str} (network: {network})"
 
     return False, ""
 
@@ -622,12 +622,12 @@ def check_outbound_request(
     # HTTP方法检查
     method_upper = method.upper()
     if method_upper not in cfg.allowed_methods:
-        return False, f"不允许的HTTP方法: {method}"
+        return False, f"disallowed HTTP method: {method}"
 
     # URL安全检查（SSRF防护）
     safe, reason = validate_url(url, cfg.url_config)
     if not safe:
-        return False, f"URL安全检查失败: {reason}"
+        return False, f"URL security check failed: {reason}"
 
     # 额外的域名白名单检查
     if cfg.domain_whitelist:
@@ -642,9 +642,9 @@ def check_outbound_request(
                         allowed = True
                         break
                 if not allowed:
-                    return False, f"域名不在出站白名单中: {hostname}"
+                    return False, f"domain not in outbound whitelist: {hostname}"
         except Exception as e:
-            logger.debug(f"[SecurityBaseline] 未知异常（不影响运行）: {e}")
+            logger.debug(f"[SecurityBaseline] unknown exception (non-fatal): {e}")
             pass
 
     # 额外的域名黑名单检查
@@ -656,9 +656,9 @@ def check_outbound_request(
                 hostname_lower = hostname.lower()
                 for bl in cfg.domain_blacklist:
                     if hostname_lower == bl.lower() or hostname_lower.endswith('.' + bl.lower()):
-                        return False, f"域名在出站黑名单中: {hostname}"
+                        return False, f"domain in outbound blacklist: {hostname}"
         except Exception as e:
-            logger.debug(f"[SecurityBaseline] 未知异常（不影响运行）: {e}")
+            logger.debug(f"[SecurityBaseline] unknown exception (non-fatal): {e}")
             pass
 
     return True, ""
@@ -706,7 +706,7 @@ def redact_url_params(url: str, params_to_redact: Optional[List[str]] = None) ->
             return urlunparse(parsed._replace(query=new_query))
 
     except Exception as e:
-        logger.debug(f"[Security] URL参数脱敏异常: {e}")
+        logger.debug(f"[Security] URL param redaction error: {e}")
 
     return url
 

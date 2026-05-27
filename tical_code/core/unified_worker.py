@@ -701,10 +701,10 @@ class Worker:
                     try:
                         _prompt = (
                             "Classify this message from an AI management conversation.\n"
-                            "Pick relevant categories from: 问题, 修复, 决策, 任务, 技术方案, 配置, 部署, 查询, 通知, 审计\n"
+                            "Pick relevant categories from: question, fix, decision, task, design, config, deploy, query, notify, audit\n"
                             f"Message: {_content}\n\n"
                             "Respond with valid JSON ONLY: "
-                            '{"tags": ["问题"], "summary": "one line summary in Chinese (max 60 chars)"}'
+                            '{"tags": ["question"], "summary": "one line summary (max 60 chars)"}'
                         )
                         _conv = [{"role": "user", "content": _prompt}]
                         _resp = self.llm.chat(_conv)
