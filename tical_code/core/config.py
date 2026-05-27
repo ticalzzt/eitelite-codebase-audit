@@ -1,31 +1,103 @@
-"""Unified config loader - single source of truth for all modules."""
+"""Unified config loader - single source of truth for all modules.
+
+Search order for config.json:
+  1. TICOBOT_DIR/config.json
+  2. TICAL_CODE_ROOT/config.json
+  3. ~/tical-code/config.json
+  4. ~/eitelite/config.json
+  5. /root/tical-code/config.json
+  6. CWD/config.json
+
+Priority (highest wins):
+  Environment variables > config.json > defaults
+
+Supported env vars:
+  AI_MODEL / DEEPSEEK_MODEL / OPENAI_MODEL  → ai_model
+  OPENAI_API_KEY / DEEPSEEK_API_KEY          → ai_key
+  OPENAI_BASE_URL / DEEPSEEK_BASE_URL        → ai_endpoint
+  FALLBACK_MODEL / LLM_FALLBACK_MODEL        → fallback_model
+  WORKER_NAME                                → name
+  TICOBOT_DIR / TICAL_CODE_ROOT              → workspace base
+"""
 import json
+import logging
 import os
 from pathlib import Path
 
+logger = logging.getLogger("tical-code.config")
+
+
+def _find_config_json() -> Path | None:
+    """Find the first existing config.json from known locations."""
+    candidates = []
+
+    # Env-specified directories first
+    for env_var in ["TICOBOT_DIR", "TICAL_CODE_ROOT"]:
+        d = os.environ.get(env_var, "")
+        if d:
+            candidates.append(Path(d) / "config.json")
+
+    # Home directory variants
+    home = Path.home()
+    candidates.extend([
+        home / "tical-code" / "config.json",
+        home / "eitelite" / "config.json",
+        Path("/root/tical-code") / "config.json",
+    ])
+
+    # CWD fallback
+    try:
+        candidates.append(Path(os.getcwd()) / "config.json")
+    except OSError:
+        pass
+
+    for p in candidates:
+        try:
+            if p.exists():
+                return p
+        except PermissionError:
+            continue
+    return None
+
+
+def _find_workspace() -> str:
+    """Determine workspace base directory."""
+    for env_var in ["TICOBOT_DIR", "TICAL_CODE_ROOT"]:
+        d = os.environ.get(env_var, "")
+        if d and Path(d).exists():
+            return d
+
+    home = Path.home()
+    for candidate in [home / "tical-code", home / "eitelite", Path("/root/tical-code")]:
+        try:
+            if candidate.exists():
+                return str(candidate)
+        except PermissionError:
+            continue
+
+    try:
+        cwd = os.getcwd()
+        if Path(cwd).exists():
+            return cwd
+    except OSError:
+        pass
+
+    return str(home)
+
 
 def load_config() -> dict:
-    """Load worker config from TICOBOT_DIR/config.json, worker_config.json, env."""
-    base = os.environ.get("TICOBOT_DIR", "")
-    if not base:
-        for loc in [Path.home() / "tical-code", Path("/root/tical-code")]:
-            try:
-                if loc.exists():
-                    base = str(loc)
-                    break
-            except PermissionError:
-                continue
+    """Load worker config. Priority: env > config.json > defaults."""
+    base = _find_workspace()
 
     cfg = {
-        "workspace": base or str(Path.home()),
+        "workspace": base,
         "tg_token": os.environ.get("TG_BOT_TOKEN", ""),
         "chat_url": os.environ.get("TICAL_CHAT_URL", ""),
         "chat_key": os.environ.get("TICAL_CHAT_KEY", ""),
     }
 
-    # worker_config.json (legacy - has tg_token + name)
+    # Worker name: env > worker_config.json > default
     cfg["name"] = os.environ.get("WORKER_NAME", "seoul")
-    # tg_token 仅从环境变量 TG_BOT_TOKEN 读取（不从文件）
     wc_path = Path(base) / "worker_config.json"
     if wc_path.exists():
         try:
@@ -35,47 +107,56 @@ def load_config() -> dict:
         except Exception:
             pass
 
-    # Also try cwd (systemd WorkingDirectory)
-    if not base:
-        cwd = os.getcwd()
-        if Path(cwd).exists():
-            base = cwd
-
     # config.json (AI settings)
-    config_path = Path(base) / "config.json"
-    if not config_path.exists():
-        cwd_cfg = Path(os.getcwd()) / "config.json"
-        if cwd_cfg.exists():
-            config_path = cwd_cfg
-    if config_path.exists():
+    config_path = _find_config_json()
+    file_cfg = {}
+    if config_path:
         try:
             file_cfg = json.loads(config_path.read_text())
-            if file_cfg.get("ai_endpoint"):
-                cfg["ai_endpoint"] = file_cfg["ai_endpoint"]
-            if file_cfg.get("ai_key"):
-                cfg["ai_key"] = file_cfg["ai_key"]
-            if file_cfg.get("ai_model"):
-                cfg["ai_model"] = file_cfg["ai_model"]
-        except Exception:
-            pass
+            logger.info(f"Loaded config from {config_path}")
+        except Exception as e:
+            logger.warning(f"Failed to read {config_path}: {e}")
+
+    # File values (lower priority than env)
+    if file_cfg.get("ai_endpoint"):
+        cfg["ai_endpoint"] = file_cfg["ai_endpoint"]
+    if file_cfg.get("ai_key"):
+        cfg["ai_key"] = file_cfg["ai_key"]
+    if file_cfg.get("ai_model"):
+        cfg["ai_model"] = file_cfg["ai_model"]
+    if file_cfg.get("fallback_model"):
+        cfg["fallback_model"] = file_cfg["fallback_model"]
 
     # data_collection from config.json
-    try:
-        if "data_collection" in file_cfg:
-            cfg["data_collection"] = file_cfg["data_collection"]
-    except Exception:
-        pass
+    if "data_collection" in file_cfg:
+        cfg["data_collection"] = file_cfg["data_collection"]
 
     # Env overrides (highest priority)
     env_name = os.environ.get("WORKER_NAME", "")
     if env_name:
         cfg["name"] = env_name
+
     env_key = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("DEEPSEEK_API_KEY", "")
     if env_key:
         cfg["ai_key"] = env_key
+
     env_base = os.environ.get("OPENAI_BASE_URL", "") or os.environ.get("DEEPSEEK_BASE_URL", "")
     if env_base:
         cfg["ai_endpoint"] = env_base
+
+    # ai_model: AI_MODEL > DEEPSEEK_MODEL > OPENAI_MODEL (all override file)
+    env_model = (
+        os.environ.get("AI_MODEL", "")
+        or os.environ.get("DEEPSEEK_MODEL", "")
+        or os.environ.get("OPENAI_MODEL", "")
+    )
+    if env_model:
+        cfg["ai_model"] = env_model
+
+    # fallback_model: FALLBACK_MODEL > LLM_FALLBACK_MODEL (override file)
+    env_fallback = os.environ.get("FALLBACK_MODEL", "") or os.environ.get("LLM_FALLBACK_MODEL", "")
+    if env_fallback:
+        cfg["fallback_model"] = env_fallback
 
     return cfg
 

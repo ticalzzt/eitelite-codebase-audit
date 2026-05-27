@@ -176,7 +176,14 @@ class OpenAIBackend(LLMBackend):
                 "reasoning_content": msg.get("reasoning_content", "") or ""}
 
 def _load_configs() -> list[tuple]:
-    """Load all available configs, return [(cfg_dict, source_path)]."""
+    """Load all available configs, return [(cfg_dict, source_path)].
+
+    DEPRECATED: Use tical_code.core.config.load_config() instead.
+    This function reads from ~/tical_workers/*/config.json which is a legacy path.
+    Kept for backward compatibility only.
+    """
+    import warnings
+    warnings.warn("_load_configs() is deprecated, use config.load_config()", DeprecationWarning, stacklevel=2)
     configs = []
 
     for pattern in [
@@ -196,7 +203,10 @@ def _load_configs() -> list[tuple]:
 
 def create_llm_backend(backend: str = "auto", model: str = "",
                        api_key: str = "", base_url: str = "") -> LLMBackend:
-    """Factory: create LLM backend. Env vars first, config files fallback."""
+    """Factory: create LLM backend. Env vars first, config files fallback.
+
+    DEPRECATED: Use tical_code.core.config.load_config() + DeepSeekProvider instead.
+    """
     env_key = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("DEEPSEEK_API_KEY", "")
     env_base = os.environ.get("OPENAI_BASE_URL", "") or os.environ.get("DEEPSEEK_BASE_URL", "")
 
