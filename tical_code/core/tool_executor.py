@@ -65,7 +65,7 @@ def _bash_safety_check(command: str) -> Optional[str]:
     # 工作区限制：只允许在 WORKSPACE 内操作
     unsafe_ops = [
         r"cd\s+\.\.", r">\s*/(?!dev/|tmp/)[^w]",
-        r"rm\s+[^-]", r"mv\s+/", r"cp\s+/",
+        r"mv\s+/", r"cp\s+/",
     ]
     for p in unsafe_ops:
         if re.search(p, command):
