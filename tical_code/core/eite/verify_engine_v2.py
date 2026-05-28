@@ -94,6 +94,17 @@ _COMPLETION_RE = re.compile(
     r"\b(done|completed?|finished|resolved|accomplished|已[做完修好改]|完成|修复|修正)\b",
     re.I,
 )
+
+# EITE v3: Code & plan patterns
+_CODE_BLOCK_RE = re.compile(r'```')
+_PLAN_KEYWORDS_RE = re.compile(r'\b(understand|plan|propose|approach|task|方案|理解|计划)\b', re.I)
+
+_PROGRESS_RE = re.compile(
+    r"\b(i still need to|working on|analyzing|let me first|let me check|looking into|"
+    r"i'm going to|i will start|starting with|first,?\s+(let|i|we)|"
+    r"let me read|understanding the|examining the|investigating)\b",
+    re.I,
+)
 _DIFF_RAW_RE = re.compile(
     r"(?m)^(?:diff --git |index |--- [ab]/|\+\+\+ [ab]/|@@ -\d+,\d+ \+\d+,?\d* @@|^\+[^+]|^-[^-])",
 )
@@ -350,6 +361,10 @@ class VerificationEngine:
         violations = []
         corrections = []
 
+        # Progress check: if reply indicates ongoing work, skip evidence rules
+        if _PROGRESS_RE.search(reply):
+            return VerificationResult(passed=True, action="allow", violations=[], corrections=[])
+
         # Rule 1-2: Declaration-evidence matching
         for match in _DECL_RE.finditer(reply.lower()):
             verb = match.group(1)  # group 1 = the verb after prefix
@@ -465,6 +480,33 @@ class VerificationEngine:
                     severity="high",
                 ))
 
+        # Rule 9: Think Before Coding
+        for c in self._check_think_before_code(reply):
+            violations.append(Violation(
+                rule=9, category="planning",
+                claim="code_without_plan",
+                detail=c,
+                severity="medium",
+            ))
+
+        # Rule 10: Simplicity Check
+        for c in self._check_code_simplicity(reply):
+            violations.append(Violation(
+                rule=10, category="quality",
+                claim="code_too_long",
+                detail=c,
+                severity="low",
+            ))
+
+        # Rule 11: Claimed file must be verified
+        for c in self._check_file_verification():
+            violations.append(Violation(
+                rule=11, category="evidence",
+                claim="file_not_verified",
+                detail=c,
+                severity="high",
+            ))
+
         # Injection detection
         reply_lower = reply.lower()
         for pattern in _INJECTION_PATTERNS:
@@ -499,6 +541,67 @@ class VerificationEngine:
             action=action,
             corrections=[v.detail for v in violations],
         )
+
+    # ------------------------------------------------------------------
+    # EITE v3: Think Before Coding (Rule 9)
+    # ------------------------------------------------------------------
+
+    def _check_think_before_code(self, reply: str) -> list[str]:
+        """Rule 9: If reply contains code blocks, check that LLM stated understanding first."""
+        corrections = []
+        if not _CODE_BLOCK_RE.search(reply):
+            return corrections
+        # Check if reply itself contains plan keywords
+        if not _PLAN_KEYWORDS_RE.search(reply):
+            corrections.append("Code provided without stating understanding or plan first")
+        return corrections
+
+    # ------------------------------------------------------------------
+    # EITE v3: Simplicity Check (Rule 10)
+    # ------------------------------------------------------------------
+
+    def _check_code_simplicity(self, reply: str) -> list[str]:
+        """Rule 10: Warn if code block exceeds 200 lines."""
+        corrections = []
+        in_block = False
+        block_lines = 0
+        for line in reply.split("\n"):
+            if line.strip().startswith("```"):
+                if in_block:
+                    if block_lines > 200:
+                        corrections.append(f"Code block too long ({block_lines} lines, max 200)")
+                    in_block = False
+                    block_lines = 0
+                else:
+                    in_block = True
+            elif in_block:
+                block_lines += 1
+        return corrections
+
+    # ------------------------------------------------------------------
+    # EITE v3: Claimed File Must Be Verified (Rule 11)
+    # ------------------------------------------------------------------
+
+    def _check_file_verification(self) -> list[str]:
+        """Rule 11: If LLM modified a system file, check that a read-back was performed."""
+        corrections = []
+        _SYSTEM_FILE_RE = re.compile(r'/etc/nginx|/opt/|server\.py|index\.html|app\.js')
+        _WRITE_CMDS = re.compile(r'sed -i|cat.*>|file_write|cp |mv ')
+        _READ_CMDS = re.compile(r'cat |head |tail |grep |file_read|ls -la ')
+
+        for action in self._actions:
+            cmd = str(action.get("args", {}).get("command", ""))
+            if _WRITE_CMDS.search(cmd) and _SYSTEM_FILE_RE.search(cmd):
+                # Write to a system file detected — check for read-back later
+                has_readback = False
+                for later_action in self._actions:
+                    later_cmd = str(later_action.get("args", {}).get("command", ""))
+                    if _READ_CMDS.search(later_cmd) and _SYSTEM_FILE_RE.search(later_cmd):
+                        has_readback = True
+                        break
+                if not has_readback:
+                    corrections.append(f"System file modified but not verified by re-reading: {cmd[:60]}")
+        return corrections
 
     # ------------------------------------------------------------------
     # Helpers
