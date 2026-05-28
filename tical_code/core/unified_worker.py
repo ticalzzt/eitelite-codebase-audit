@@ -5,6 +5,7 @@ Single loop: poll channels → LLM call → tool execute → format → reply.
 """
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -803,16 +804,10 @@ All other messages enter the LLM conversation loop.
                         self.verif_recorder.record_retry_instruction(retry_msg)
                         logger.warning(f"Reply blocked: {phase3.corrections}")
                     elif phase3.action == "retry":
-                        # High severity — force retry for evidence
-                        retry_msg = "[EVIDENCE REQUIRED] " + "; ".join(phase3.corrections) + ". You MUST include raw terminal output as evidence."
-                        conv.append({"role": "system", "content": retry_msg})
-                        self.verif_recorder.record_retry_instruction(retry_msg)
-                        logger.warning(f"Reply needs retry: {phase3.corrections}")
-                        self._evidence_retry_count += 1
-                        if self._evidence_retry_count >= 3:
-                            reply += "\n" + "; ".join(f"[{c}]" for c in phase3.corrections)
-                            break
-                        continue
+                        # Annotate reply with verification notes instead of retrying
+                        logger.info(f"Reply annotated: {phase3.corrections}")
+                        reply += "\n" + "; ".join(f"[{c}]" for c in phase3.corrections)
+                        break
                     elif phase3.action == "rewrite":
                         reply += "\n" + "; ".join(f"[{c}]" for c in phase3.corrections)
 
@@ -852,6 +847,8 @@ All other messages enter the LLM conversation loop.
 
         # Exceeded max iterations — save partial conversation and log
         logger.warning(f"[worker] {msg.sender}: exceeded max tool iterations")
+        # End verification recording — save training data even on timeout
+        self.verif_recorder.end_turn("[timeout]")
         try:
             session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
             new_msgs = []
@@ -876,9 +873,26 @@ All other messages enter the LLM conversation loop.
 
 def main():
     logger.info("tical-code worker starting")
-    cfg = load_config()
-    worker = Worker(cfg)
-    worker.run()
+
+    # PID lock — prevent duplicate instances
+    PID_FILE = Path("/tmp/unified-worker.pid")
+    try:
+        existing = int(PID_FILE.read_text().strip())
+        if os.path.exists(f"/proc/{existing}"):
+            logger.error(f"Another worker is already running (PID={existing}) — exiting")
+            sys.exit(1)
+        else:
+            logger.warning(f"Stale PID file ({existing}) — overwriting")
+    except (FileNotFoundError, ValueError):
+        pass
+    PID_FILE.write_text(str(os.getpid()))
+
+    try:
+        cfg = load_config()
+        worker = Worker(cfg)
+        worker.run()
+    finally:
+        PID_FILE.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     main()
