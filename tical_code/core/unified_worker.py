@@ -619,7 +619,7 @@ All other messages enter the LLM conversation loop.
             conv.append({"role": "user", "content": msg.content})
         _new_start = len(conv) - 1  # track where new messages begin
 
-        max_iterations = 60
+        max_iterations = 120
         for iteration in range(max_iterations):
             response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
             content = response.get("content", "")
