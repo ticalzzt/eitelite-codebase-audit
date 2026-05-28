@@ -626,7 +626,10 @@ class PersistentMemory:
             
             conn.commit()
             conn.close()
-            
+
+            # Update semantic index
+            self._on_store(key, value)
+
             logger.debug(f"[PersistentMemory] Stored: {key} ({category})")
             return True
             
@@ -727,7 +730,10 @@ class PersistentMemory:
             cursor.execute("DELETE FROM memories WHERE key = ?", (key,))
             conn.commit()
             conn.close()
-            
+
+            # Update semantic index
+            self._on_forget(key)
+
             logger.debug(f"[PersistentMemory] Forgot: {key}")
             return True
             
@@ -929,6 +935,125 @@ class PersistentMemory:
             logger.error(f"[PersistentMemory] Keyword search failed: {e}")
             return []
 
+    def semantic_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        min_score: float = 0.3,
+    ) -> List[Dict]:
+        """
+        Semantic search: find memories by meaning, not just keywords.
+        
+        Uses sentence-transformers + FAISS for embedding-based retrieval.
+        Falls back to keyword search if embeddings are unavailable.
+        
+        Args:
+            query: Natural language query (Chinese or English)
+            top_k: Max results to return
+            min_score: Minimum cosine similarity (0.0-1.0)
+            
+        Returns:
+            List of memory dicts with 'semantic_score' field, sorted by score desc.
+        """
+        try:
+            from .semantic_search import get_semantic_index
+        except ImportError:
+            logger.warning("[PersistentMemory] semantic_search module not available")
+            return self.search_by_keywords(query, top_k)
+        
+        index = get_semantic_index(self.db_path)
+        if index is None:
+            return self.search_by_keywords(query, top_k)
+        
+        # Ensure index is built
+        index._ensure_loaded()
+        if index._model is None:
+            logger.info("[SemanticSearch] Model unavailable, falling back to keywords")
+            return self.search_by_keywords(query, top_k)
+        
+        # Rebuild if index is empty but DB has entries
+        if len(index._keys) == 0:
+            import sqlite3 as _sqlite3
+            try:
+                conn = _sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM memories")
+                count = cursor.fetchone()[0]
+                conn.close()
+                if count > 0:
+                    logger.info(f"[SemanticSearch] Empty index, rebuilding from {count} entries...")
+                    index.rebuild_from_db(self.db_path)
+            except Exception as e:
+                logger.error(f"[SemanticSearch] Rebuild check failed: {e}")
+        
+        # Run semantic search
+        hits = index.search(query, top_k=top_k, min_score=min_score)
+        if not hits:
+            # No semantic matches — fall back to keywords
+            return self.search_by_keywords(query, top_k)
+        
+        # Fetch full memory entries from DB
+        import sqlite3 as _sqlite3
+        results = []
+        try:
+            conn = _sqlite3.connect(self.db_path)
+            conn.row_factory = _sqlite3.Row
+            cursor = conn.cursor()
+            
+            for key, score in hits:
+                cursor.execute("SELECT * FROM memories WHERE key = ?", (key,))
+                row = cursor.fetchone()
+                if row:
+                    mem = dict(row)
+                    mem['semantic_score'] = round(score, 4)
+                    results.append(mem)
+                    self._update_access_counts([key])
+            
+            conn.close()
+        except Exception as e:
+            logger.error(f"[SemanticSearch] DB fetch failed: {e}")
+        
+        return results
+    
+    def reindex_semantic(self) -> int:
+        """
+        Rebuild the semantic embedding index from all memories.
+        
+        Returns:
+            Number of entries indexed.
+        """
+        try:
+            from .semantic_search import get_semantic_index
+            index = get_semantic_index(self.db_path)
+            if index is None:
+                return 0
+            index.rebuild_from_db(self.db_path)
+            return len(index._keys)
+        except ImportError:
+            logger.warning("[PersistentMemory] semantic_search module not available")
+            return 0
+    
+    def _on_store(self, key: str, value: str):
+        """Update semantic index after storing a memory (called by store())."""
+        try:
+            from .semantic_search import get_semantic_index
+            index = get_semantic_index(self.db_path)
+            if index and index._model is not None:
+                text = f"{key}: {value}"
+                index.upsert(key, text)
+        except (ImportError, Exception):
+            pass  # Silent — semantic search is optional
+    
+    def _on_forget(self, key: str):
+        """Update semantic index after forgetting a memory."""
+        try:
+            from .semantic_search import get_semantic_index
+            index = get_semantic_index(self.db_path)
+            if index:
+                index.remove(key)
+        except (ImportError, Exception):
+            pass
+    
 # =============================================================================
 # Global Persistent Memory Instance
 # =============================================================================
