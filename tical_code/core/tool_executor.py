@@ -331,7 +331,19 @@ for s in TOOL_SCHEMAS:
 
 
 def redact_secrets(text: str) -> str:
-    """Mask common secret patterns (API keys, tokens) in text for safe logging."""
+    """Mask common secret patterns (API keys, tokens) in text for safe logging.
+
+    Uses comprehensive 15+ pattern redaction from security_baseline when available.
+    Falls back to basic 3-pattern version if security_baseline unavailable.
+    """
+    if not text:
+        return text
+    try:
+        from tical_code.core.security_baseline import redact_secrets as _sb_redact
+        return _sb_redact(text)
+    except ImportError:
+        pass
+    # Fallback: basic 3-pattern redaction
     import re
     text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', r'sk-***REDACTED***', text)
     text = re.sub(r'(ghp_[a-zA-Z0-9]{36})', r'ghp_***REDACTED***', text)
@@ -359,6 +371,11 @@ def exec_bash(args: dict) -> dict:
         timeout = 30
 
     result = _run_cmd(cmd, timeout)
+    # Redact secrets from bash output
+    if result.get("stdout"):
+        result["stdout"] = redact_secrets(result["stdout"])
+    if result.get("stderr"):
+        result["stderr"] = redact_secrets(result["stderr"])
     if result["exit_code"] != 0:
         logger.warning(f"[executor] bash exit={result['exit_code']}: {cmd[:60]}")
     return result
