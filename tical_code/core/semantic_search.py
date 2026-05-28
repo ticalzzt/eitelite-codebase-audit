@@ -9,7 +9,6 @@ Supports: Chinese + English + 50 other languages
 
 import json
 import os
-import time
 import logging
 import sqlite3
 from typing import List, Dict, Optional, Tuple
@@ -24,9 +23,6 @@ logger = logging.getLogger(__name__)
 
 _model = None
 _index = None
-_index_keys: List[str] = []  # parallel array: index position → DB key
-_index_dirty = False
-
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 EMBEDDING_DIM = 384
 
