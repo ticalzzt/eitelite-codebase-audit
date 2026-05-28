@@ -845,7 +845,7 @@ All other messages enter the LLM conversation loop.
                 self.verif_recorder.end_turn(reply)
                 return
 
-        # Exceeded max iterations — save partial conversation and log
+        # Exceeded max iterations — send last reply to sender, save partial conversation
         logger.warning(f"[worker] {msg.sender}: exceeded max tool iterations")
         # End verification recording — save training data even on timeout
         self.verif_recorder.end_turn("[timeout]")
@@ -861,8 +861,27 @@ All other messages enter the LLM conversation loop.
                 new_msgs.append(entry)
             self.sessions.save_messages(session_id, new_msgs)
         except Exception as e:
-            logger.debug(f"[{filepath.stem}] swallowed: {e}")
-        # Silently save continuation if any context remains
+            logger.debug(f"[worker] session save error: {e}")
+        # Send last assistant reply back to sender (not system messages)
+        last_reply = None
+        if conv and len(conv) > 2:
+            for m in reversed(conv):
+                if m.get("role") == "assistant" and m.get("content", "").strip():
+                    last_reply = m["content"]
+                    break
+        if channel and msg.sender not in ("system", None):
+            timeout_msg = "[worker timeout after reaching max tool iterations]"
+            if last_reply:
+                timeout_msg += f"\n\n{last_reply[:1500]}"
+            else:
+                timeout_msg += "\nNo assistant reply was produced."
+            channel.send(Response(
+                content=timeout_msg,
+                target=msg.sender,
+                source=msg.source,
+                chat_id=msg.chat_id,
+            ))
+        # Save continuation hint if explicit
         if conv and len(conv) > 2:
             last_assistant = next(
                 (m["content"] for m in reversed(conv) if m.get("role") == "assistant"),
