@@ -1,0 +1,47 @@
+[
+  {
+    "scenario_id": "ZM-CODE-001",
+    "category": "code_generation",
+    "subcategory": "concurrent_memory_pool",
+    "tier": "hard",
+    "agent_command": "Write a lock-free memory pool allocator in C that supports concurrent allocation and deallocation from multiple threads. Must handle ABA problem, use hazard pointers for safe reclamation, and outperform malloc in a 16-thread benchmark. Include the benchmark harness.",
+    "expected_outcome": "Complete C implementation with: (1) per-thread free lists with CAS operations, (2) hazard pointer mechanism for safe memory reclamation, (3) ABA prevention via tagged pointers, (4) thread-local cache with batched refill/return, (5) benchmark comparing throughput vs glibc malloc across varying allocation sizes and thread counts, (6) correctness validation via stress test with leak detection.",
+    "tags": ["code", "concurrent", "lock_free", "memory_management", "systems_programming"]
+  },
+  {
+    "scenario_id": "ZM-CODE-002",
+    "category": "code_generation",
+    "subcategory": "distributed_tx_engine",
+    "tier": "hard",
+    "agent_command": "Implement a two-phase commit transaction engine in Python that coordinates distributed transactions across multiple database shards. Support prepare/commit/rollback phases with timeout handling, leader election for the coordinator, and write-ahead logging for crash recovery. The system should handle up to 1000 concurrent transactions.",
+    "expected_outcome": "Production-quality implementation with: (1) coordinator role with WAL for crash recovery, (2) participant protocol implementing prepare/commit/abort, (3) timeout-based automatic rollback, (4) leader election via Raft consensus, (5) connection pooling for shard communication, (6) integration tests simulating network partitions and coordinator failures, (7) benchmark showing 1000 TPS with <100ms p99 latency.",
+    "tags": ["code", "distributed_systems", "transaction", "consensus", "crash_recovery"]
+  },
+  {
+    "scenario_id": "ZM-INSTRUCT-001",
+    "category": "instruction_following",
+    "subcategory": "multi_constraint_extraction",
+    "tier": "hard",
+    "agent_command": "Given this paragraph of legal text, extract ALL of the following into a structured JSON object: (1) every named entity (person, org, date, money amount), (2) every contractual obligation with its deadline, (3) every conditional clause with its trigger condition, (4) every penalty or remedy mentioned, (5) cross-references between clauses. Output ONLY valid JSON, no explanation. If any field is empty, use null, never omit it.",
+    "expected_outcome": "A single valid JSON object with exactly these keys: entities (array of {name, type, context}), obligations (array of {duty, deadline, clause_ref}), conditions (array of {trigger, consequence, clause_ref}), penalties (array of {type, amount_or_description, clause_ref}), cross_references (array of {from_clause, to_clause, relationship}). Each array must be present even if empty. No markdown, no commentary, pure JSON.",
+    "tags": ["instruction_following", "extraction", "structured_output", "constraint_adherence"]
+  },
+  {
+    "scenario_id": "ZM-INSTRUCT-002",
+    "category": "instruction_following",
+    "subcategory": "format_drift_resistance",
+    "tier": "hard",
+    "agent_command": "Convert the following CSV data into a Markdown table with exactly these columns: ID | Name | Revenue (M$) | YoY Growth | Status. Revenue must be formatted with exactly 2 decimal places and a dollar sign. YoY Growth must show + or - sign and a percent symbol. Status must be one of: 🟢 Strong, 🟡 Moderate, 🔴 Weak, based on whether YoY Growth is >15%, 5-15%, or <5%. Sort rows by Revenue descending. If any CSV row has missing data, skip it and note how many rows were skipped at the end.",
+    "expected_outcome": "A valid Markdown table with exactly 5 columns as specified, properly formatted numbers with currency symbols and percentage signs, emoji status indicators, rows sorted by revenue descending, and a trailing note stating exactly how many rows were skipped (if any). The table should be renderable as-is.",
+    "tags": ["instruction_following", "format_conversion", "data_transformation", "precision"]
+  },
+  {
+    "scenario_id": "ZM-MATH-001",
+    "category": "mathematical_reasoning",
+    "subcategory": "stochastic_optimization",
+    "tier": "hard",
+    "agent_command": "A factory has 5 production lines, each with different failure rates modeled as exponential distributions (λ₁=0.01, λ₂=0.015, λ₃=0.008, λ₄=0.02, λ₅=0.012 per hour). Each line produces 100 units/hour when operational. Maintenance costs $500 per line per intervention, and downtime costs $2000/hour of lost production. Using stochastic modeling, determine: (1) the optimal maintenance interval for each line that minimizes total expected cost per hour, (2) the expected monthly production loss, (3) the probability that fewer than 4 lines are operational at any given time.",
+    "expected_outcome": "Step-by-step derivation: (1) Set up cost function C(t) = (maintenance_cost/t) + lost_production_rate * integral of downtime probability, (2) find optimal t* for each line by taking derivative and solving, (3) compute E[monthly_loss] using line availability probabilities, (4) compute P(X<4) using binomial with availability p_i = exp(-λ_i * t*). Show all intermediate calculations, provide final numerical answers with units, and verify results make economic sense.",
+    "tags": ["math", "stochastic", "optimization", "reliability_engineering", "cost_analysis"]
+  }
+]
