@@ -29,6 +29,7 @@ from tical_code.core.trace_recorder import TraceRecorder
 from tical_code.core.trace.verification_recorder import VerificationEventRecorder
 from tical_code.core.config import get_data_collection_config
 from tical_code.core.modules.proposal_gate import ProposalGate
+from tical_code.core.memory import get_persistent_memory
 
 # Known AI worker names — used for CMD protocol identity detection
 WORKER_IDS = {"seoul", "tico", "ani", "kael", "tico-oracle", "test"}
@@ -134,6 +135,16 @@ class Worker:
         # EITE identity layer — now integrated into VerificationEngine
         self.system_prompt += self.verification.get_identity_marker()
         logger.info(f"EITE identity bound: {cfg['name']}")
+
+        # Memory injection — load persistent memory context into system prompt
+        try:
+            self._persistent_mem = get_persistent_memory()
+            mem_ctx = self._persistent_mem.get_context_for_session(max_items=20)
+            if mem_ctx:
+                self.system_prompt += "\n\n" + mem_ctx
+                logger.info(f"Memory injected: {len(mem_ctx)} chars")
+        except Exception as e:
+            logger.warning(f"Memory injection failed: {e}")
 
         logger.info(
             f"Worker initialized: name={self.name} "
@@ -621,6 +632,10 @@ All other messages enter the LLM conversation loop.
 
         max_iterations = 120
         for iteration in range(max_iterations):
+            # Context compaction — trim if over token limit
+            if self.compactor.needs_compaction(conv):
+                conv = self.compactor.compact(conv, self.llm.call)
+                logger.info(f"[worker] context compacted: {len(conv)} messages")
             response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
             content = response.get("content", "")
             tool_calls = response.get("tool_calls", [])

@@ -805,6 +805,7 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "file_patch": exec_file_patch,
         "memory_save": lambda a: exec_memory_save(a, base_dir),
         "memory_load": lambda a: exec_memory_load(a, base_dir),
+        "memory": exec_memory,
         "state_save": lambda a: exec_state_save(a, base_dir),
         "chat_send": exec_chat_send,
         "restart_self": exec_restart_self,
