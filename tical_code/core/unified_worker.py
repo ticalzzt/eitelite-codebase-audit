@@ -31,6 +31,7 @@ from tical_code.core.config import get_data_collection_config
 from tical_code.core.modules.proposal_gate import ProposalGate
 from tical_code.core.memory import get_persistent_memory
 from tical_code.vigil import build_vigil
+from tical_code.core.usage import UsageTracker
 
 # Known AI worker names — used for CMD protocol identity detection
 WORKER_IDS = {"seoul", "tico", "ani", "kael", "tico-oracle", "test"}
@@ -125,6 +126,23 @@ class Worker:
             logger.info('TraceRecorder active -> %s' % dc['target_url'])
         self.gate = ProposalGate(timeout_seconds=300)
         self._evidence_retry_count = 0
+
+        # Usage tracking
+        self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
+
+        # Fallback model: retry with this when primary fails
+        self.fallback_model = cfg.get("fallback_model", "")
+
+        # CDP browser config — set env for tool_executor to pick up
+        cdp_url = cfg.get("cdp_url", "")
+        if cdp_url:
+            os.environ["CDP_URL"] = cdp_url
+            logger.info(f"CDP browser: {cdp_url}")
+        if not cfg.get("cdp_headless", True):
+            os.environ["CDP_HEADLESS"] = "0"
+        cdp_proxy = cfg.get("cdp_proxy", "")
+        if cdp_proxy:
+            os.environ["CDP_PROXY"] = cdp_proxy
 
         # Vigil — passive monitoring (patrol every 5 minutes)
         try:
@@ -655,7 +673,19 @@ All other messages enter the LLM conversation loop.
             if self.compactor.needs_compaction(conv):
                 conv = self.compactor.compact(conv, self.llm.call)
                 logger.info(f"[worker] context compacted: {len(conv)} messages")
-            response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
+            try:
+                response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
+            except Exception as e:
+                logger.warning(f"LLM call failed: {e}")
+                # Fallback model retry
+                if self.fallback_model and hasattr(self.llm, 'set_model'):
+                    logger.info(f"Retrying with fallback model: {self.fallback_model}")
+                    self.llm.set_model(self.fallback_model)
+                    response = self.llm.call(conv, tools=TOOL_SCHEMAS_CLEAN)
+                else:
+                    raise
+            # Track usage
+            self.usage.record_api_call(provider="llm", model=self.cfg.get("ai_model", ""))
             content = response.get("content", "")
             tool_calls = response.get("tool_calls", [])
 
