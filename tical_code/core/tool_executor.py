@@ -55,11 +55,15 @@ def _bash_safety_check(command: str) -> Optional[str]:
         WORKSPACE_G = WORKSPACE + "/"
     else:
         WORKSPACE_G = WORKSPACE or ""
-    if WORKSPACE_G and any(f" {p}" in command or command.startswith(p) for p in ["cd /", "cat /etc", "ls /etc", "cat /root"]):
+    # Allowed external paths (e.g. bench dashboard, tical-chat)
+    _ALLOWED_CMD_PREFIXES = ["cd /home/", "cd /opt/", "cat /home/", "cat /opt/", "ls /home/", "ls /opt/"]
+
+    if WORKSPACE_G and any(f" {p}" in command or command.startswith(p)
+                           for p in ["cd /etc", "cd /root", "cd /var", "cat /etc", "ls /etc", "cat /root"]):
         return f"Outside workspace, system directory access denied"
     # 工作区限制：只允许在 WORKSPACE 内操作
     unsafe_ops = [
-        r"cd\s+\.\.", r"cd\s+/[^w]", r">\s*/(?!dev/)[^w]",
+        r"cd\s+\.\.", r">\s*/(?!dev/)[^w]",
         r"rm\s+[^-]", r"mv\s+/", r"cp\s+/",
     ]
     for p in unsafe_ops:
@@ -74,6 +78,12 @@ def _workspace_path(path: str) -> Path:
     if WORKSPACE and not str(p).startswith(WORKSPACE):
         # Allow /opt/tical-chat/ paths (tical-chat server code)
         if str(p).startswith("/opt/tical-chat"):
+            return p
+        # Allow eite-benchmark paths
+        if "eite-benchmark" in str(p):
+            return p
+        # Allow /home/ubuntu/sites/ paths
+        if str(p).startswith("/home/ubuntu/sites"):
             return p
         return None
     return p
