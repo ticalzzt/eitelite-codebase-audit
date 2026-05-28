@@ -65,7 +65,7 @@ def _bash_safety_check(command: str) -> Optional[str]:
     # 工作区限制：只允许在 WORKSPACE 内操作
     unsafe_ops = [
         r"cd\s+\.\.", r">\s*/(?!dev/|tmp/)[^w]",
-        r"mv\s+/", r"cp\s+/",
+        r"rm\s+[^-]", r"mv\s+/", r"cp\s+/",
     ]
     for p in unsafe_ops:
         if re.search(p, command):
@@ -331,19 +331,7 @@ for s in TOOL_SCHEMAS:
 
 
 def redact_secrets(text: str) -> str:
-    """Mask common secret patterns (API keys, tokens) in text for safe logging.
-
-    Uses comprehensive 15+ pattern redaction from security_baseline when available.
-    Falls back to basic 3-pattern version if security_baseline unavailable.
-    """
-    if not text:
-        return text
-    try:
-        from tical_code.core.security_baseline import redact_secrets as _sb_redact
-        return _sb_redact(text)
-    except ImportError:
-        pass
-    # Fallback: basic 3-pattern redaction
+    """Mask common secret patterns (API keys, tokens) in text for safe logging."""
     import re
     text = re.sub(r'(sk-[a-zA-Z0-9]{20,})', r'sk-***REDACTED***', text)
     text = re.sub(r'(ghp_[a-zA-Z0-9]{36})', r'ghp_***REDACTED***', text)
@@ -371,11 +359,6 @@ def exec_bash(args: dict) -> dict:
         timeout = 30
 
     result = _run_cmd(cmd, timeout)
-    # Redact secrets from bash output
-    if result.get("stdout"):
-        result["stdout"] = redact_secrets(result["stdout"])
-    if result.get("stderr"):
-        result["stderr"] = redact_secrets(result["stderr"])
     if result["exit_code"] != 0:
         logger.warning(f"[executor] bash exit={result['exit_code']}: {cmd[:60]}")
     return result
@@ -822,7 +805,6 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "file_patch": exec_file_patch,
         "memory_save": lambda a: exec_memory_save(a, base_dir),
         "memory_load": lambda a: exec_memory_load(a, base_dir),
-        "memory": exec_memory,
         "state_save": lambda a: exec_state_save(a, base_dir),
         "chat_send": exec_chat_send,
         "restart_self": exec_restart_self,
