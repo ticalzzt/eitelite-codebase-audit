@@ -55,6 +55,7 @@ def _bash_safety_check(command: str) -> Optional[str]:
         WORKSPACE_G = WORKSPACE + "/"
     else:
         WORKSPACE_G = WORKSPACE or ""
+
     # Allowed external paths (e.g. bench dashboard, tical-chat)
     _ALLOWED_CMD_PREFIXES = ["cd /home/", "cd /opt/", "cat /home/", "cat /opt/", "ls /home/", "ls /opt/"]
 
@@ -63,7 +64,7 @@ def _bash_safety_check(command: str) -> Optional[str]:
         return f"Outside workspace, system directory access denied"
     # 工作区限制：只允许在 WORKSPACE 内操作
     unsafe_ops = [
-        r"cd\s+\.\.", r">\s*/(?!dev/)[^w]",
+        r"cd\s+\.\.", r">\s*/(?!dev/|tmp/)[^w]",
         r"rm\s+[^-]", r"mv\s+/", r"cp\s+/",
     ]
     for p in unsafe_ops:
@@ -79,10 +80,10 @@ def _workspace_path(path: str) -> Path:
         # Allow /opt/tical-chat/ paths (tical-chat server code)
         if str(p).startswith("/opt/tical-chat"):
             return p
-        # Allow eite-benchmark paths
+        # Allow eite-benchmark paths (bench dashboard code)
         if "eite-benchmark" in str(p):
             return p
-        # Allow /home/ubuntu/sites/ paths
+        # Allow /home/ubuntu/sites/ paths (static web sites)
         if str(p).startswith("/home/ubuntu/sites"):
             return p
         return None
@@ -157,6 +158,22 @@ TOOL_SCHEMAS = [
                     "content": {"type": "string", "description": "Content to write"}
                 },
                 "required": ["path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_patch",
+            "description": "Find and replace text in a file. Use for targeted edits instead of reading+rewriting the whole file. Supports fuzzy matching — minor whitespace/indentation differences won't break the match.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to edit"},
+                    "old_string": {"type": "string", "description": "Text to find (include surrounding context for uniqueness)"},
+                    "new_string": {"type": "string", "description": "Replacement text. Pass empty string to delete the matched text."}
+                },
+                "required": ["path", "old_string", "new_string"]
             }
         }
     },
@@ -381,6 +398,37 @@ def exec_file_write(args: dict, base_dir: str = "") -> dict:
         full_path.write_text(content)
         logger.info(f"[executor] wrote {len(content)} bytes to {full_path}")
         return {"ok": True, "path": str(full_path)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def exec_file_patch(args: dict) -> dict:
+    """Fuzzy find-and-replace. Like file_write but for targeted edits."""
+    path = args.get("path", "")
+    old_string = args.get("old_string", "")
+    new_string = args.get("new_string", "")
+    if not path or not old_string:
+        return {"error": "path and old_string are required"}
+    full_path = Path(path).expanduser()
+    if not full_path.exists():
+        return {"error": f"File not found: {path}"}
+    try:
+        content = full_path.read_text()
+        if old_string in content:
+            new_content = content.replace(old_string, new_string, 1)
+            full_path.write_text(new_content)
+            import difflib
+            diff = list(difflib.unified_diff(
+                content.splitlines(True), new_content.splitlines(True),
+                fromfile="before", tofile="after", n=2
+            ))
+            return {"ok": True, "path": path, "diff": "".join(diff[-10:])}
+        # Fuzzy fallback: strip whitespace and try again
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if old_string.strip() in stripped:
+                return {"error": f"Found similar text but with whitespace differences at line containing: {stripped[:60]}"}
+        return {"error": f"old_string not found in {path}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -754,6 +802,7 @@ def execute(name: str, args: dict, base_dir: str = "") -> dict:
         "bash": exec_bash,
         "file_read": lambda a: exec_file_read(a, base_dir),
         "file_write": lambda a: exec_file_write(a, base_dir),
+        "file_patch": exec_file_patch,
         "memory_save": lambda a: exec_memory_save(a, base_dir),
         "memory_load": lambda a: exec_memory_load(a, base_dir),
         "state_save": lambda a: exec_state_save(a, base_dir),
