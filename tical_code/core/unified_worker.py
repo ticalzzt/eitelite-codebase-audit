@@ -168,28 +168,6 @@ class Worker:
         except Exception:
             return "unknown"
 
-    @staticmethod
-    def _detect_user_language(text: str) -> str:
-        """Detect user language from message text using Unicode range heuristics.
-        
-        Returns ISO language code ('zh', 'ja', 'ko') or empty string for English/other.
-        This is a code-level fix — not a prompt patch.
-        """
-        if not text:
-            return ""
-        cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
-        hiragana = sum(1 for c in text if '\u3040' <= c <= '\u309f')
-        katakana = sum(1 for c in text if '\u30a0' <= c <= '\u30ff')
-        hangul = sum(1 for c in text if '\uac00' <= c <= '\ud7af')
-        total = max(len(text.strip()), 1)
-        if hangul / total > 0.3:
-            return "ko"
-        if (hiragana + katakana) / total > 0.3:
-            return "ja"
-        if cjk / total > 0.3:
-            return "zh"
-        return ""
-
     def run(self):
         """Main loop: poll channels → handle messages → sleep."""
         logger.info(f"Worker {self.name} entering main loop")
@@ -609,25 +587,9 @@ All other messages enter the LLM conversation loop.
                 msg.content[:200],
             )
 
-        # === Language detection — code level, per message ===
-        lang = self._detect_user_language(msg.content)
-
         conv = [
             {"role": "system", "content": self.system_prompt},
         ]
-
-        # Inject language instruction as additional system message (dynamic, not hardcoded in prompt)
-        if lang:
-            lang_prompts = {
-                "zh": "用户使用的是中文。你必须用中文回复，与用户语言保持一致。",
-                "ja": "ユーザーは日本語を使用しています。必ず日本語で返信してください。",
-                "ko": "사용자가 한국어를 사용하고 있습니다. 반드시 한국어로 답변하세요.",
-            }
-            conv.append({
-                "role": "system",
-                "content": lang_prompts.get(lang, f"The user is writing in {lang}. Reply in {lang}.")
-            })
-
         # Load session history for context persistence
         session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
         history = self.sessions.load_session(session_id)
