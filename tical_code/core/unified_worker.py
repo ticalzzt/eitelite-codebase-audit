@@ -67,7 +67,7 @@ TOOL_SCHEMAS_CLEAN = [
 ]
 
 # Tool call limits
-MAX_TOOL_ITERATIONS = 8
+MAX_TOOL_ITERATIONS = 60
 SOFT_HINT_AT = 5   # gentle nudge to wrap up
 HARD_STOP_AT = 8   # force stop
 
