@@ -68,8 +68,8 @@ TOOL_SCHEMAS_CLEAN = [
 
 # Tool call limits
 MAX_TOOL_ITERATIONS = 60
-SOFT_HINT_AT = 3   # gentle nudge to wrap up (tightened)
-HARD_STOP_AT = 6   # force stop (tightened)
+SOFT_HINT_AT = 8   # gentle nudge to wrap up (tightened)
+HARD_STOP_AT = 12   # force stop (tightened)
 
 class Worker:
     """Unified worker - polls channels, calls LLM, executes tools, replies."""
@@ -927,11 +927,7 @@ All other messages enter the LLM conversation loop.
                     last_reply = m["content"]
                     break
         if channel and msg.sender not in ("system", None):
-            timeout_msg = "[worker timeout after reaching max tool iterations]"
-            if last_reply:
-                timeout_msg += f"\n\n{last_reply[:1500]}"
-            else:
-                timeout_msg += "\nNo assistant reply was produced."
+            timeout_msg = last_reply[:1500] if last_reply else "[worker] No assistant reply was produced."
             channel.send(Response(
                 content=timeout_msg,
                 target=msg.sender,
