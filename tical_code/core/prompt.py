@@ -43,7 +43,7 @@ def build_system_prompt(
     # Rules
     rules = [
         "## Rules",
-        "1. Reply concisely, 2-3 sentences max. Use natural language, never output tool tags.",
+        "1. Match the user language for communication. If they write in Chinese, reply in Chinese. Reply concisely, 2-3 sentences max.",
         "2. Never use markdown tables (|---|---|). Use bullet lists or key: value pairs instead. Tables render as garbled text on Telegram.",
         "3. System info must be obtained via bash tool, never guess.",
         f"4. When uncertain, read {Path.home() / 'anchors' / 'ops-anchor.json'} for VPS info, IPs, API keys.",
