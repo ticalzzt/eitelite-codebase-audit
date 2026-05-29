@@ -790,13 +790,9 @@ All other messages enter the LLM conversation loop.
                 if self.verification._session_tools:
                     it_tools = self.verification._session_tools[-len(tool_calls):] if len(tool_calls) > 0 else []
                     if len(it_tools) == len(tool_calls) and all(t.get("verified") == False for t in it_tools):
-logger.info("  all blocked - forced exit")
-                        reply = "[WORKER BLOCKED] All tool calls blocked. Cannot complete."
+                        logger.info("  all blocked - forced exit")
+                        reply = "[WORKER BLOCKED] All tool calls blocked by safety policy. Cannot complete this task."
                         break
-                        conv.append({
-                            "role": "system",
-                            "content": "All tool calls were blocked by safety policy. Reply directly to the user explaining what you cannot do."
-                        })
                 # Fill missing tool responses to satisfy API requirement
                 for tc in tool_calls:
                     tc_id = tc.get("id", "")
