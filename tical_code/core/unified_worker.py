@@ -168,6 +168,17 @@ class Worker:
         except Exception:
             return "unknown"
 
+    @staticmethod
+    def _detect_user_language(text: str) -> str:
+        """Detect user language from message text.
+        Returns 'zh' if text contains meaningful Chinese content, empty string otherwise.
+        """
+        if not text:
+            return ""
+        cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        total = max(len(text.strip()), 1)
+        return "zh" if cjk / total > 0.25 else ""
+
     def run(self):
         """Main loop: poll channels → handle messages → sleep."""
         logger.info(f"Worker {self.name} entering main loop")
@@ -590,6 +601,12 @@ All other messages enter the LLM conversation loop.
         conv = [
             {"role": "system", "content": self.system_prompt},
         ]
+
+        # Inject language instruction IF user is not writing in English
+        user_lang = self._detect_user_language(msg.content)
+        if user_lang == "zh":
+            conv.append({"role": "system", "content": "用户在写中文。你必须用中文回复，与用户语言保持一致。"})
+
         # Load session history for context persistence
         session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
         history = self.sessions.load_session(session_id)
