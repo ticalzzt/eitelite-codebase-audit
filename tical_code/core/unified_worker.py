@@ -68,8 +68,8 @@ TOOL_SCHEMAS_CLEAN = [
 
 # Tool call limits
 MAX_TOOL_ITERATIONS = 60
-SOFT_HINT_AT = 5   # gentle nudge to wrap up
-HARD_STOP_AT = 8   # force stop
+SOFT_HINT_AT = 3   # gentle nudge to wrap up (tightened)
+HARD_STOP_AT = 6   # force stop (tightened)
 
 class Worker:
     """Unified worker - polls channels, calls LLM, executes tools, replies."""
@@ -790,16 +790,13 @@ All other messages enter the LLM conversation loop.
                 if self.verification._session_tools:
                     it_tools = self.verification._session_tools[-len(tool_calls):] if len(tool_calls) > 0 else []
                     if len(it_tools) == len(tool_calls) and all(t.get("verified") == False for t in it_tools):
+logger.info("  all blocked - forced exit")
+                        reply = "[WORKER BLOCKED] All tool calls blocked. Cannot complete."
+                        break
                         conv.append({
                             "role": "system",
                             "content": "All tool calls were blocked by safety policy. Reply directly to the user explaining what you cannot do."
                         })
-                        logger.info("  all blocked - injected system hint")
-
-                # Append accumulated loop detector messages after all tool responses
-                for ld_msg in loop_messages:
-                    conv.append({"role": "system", "content": ld_msg})
-
                 # Fill missing tool responses to satisfy API requirement
                 for tc in tool_calls:
                     tc_id = tc.get("id", "")

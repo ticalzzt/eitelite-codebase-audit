@@ -140,7 +140,7 @@ class LoopDetector:
                 cjk = self._has_cjk(a) or self._has_cjk(b)
                 if self._jaccard(a, b, cjk) > 0.85:
                     similar += 1
-            if similar >= 5:
+            if similar >= 4:
                 return self._emit("arg_drift", "critical", similar)
             if similar >= 3:
                 return self._emit("arg_drift", "warning", similar)
