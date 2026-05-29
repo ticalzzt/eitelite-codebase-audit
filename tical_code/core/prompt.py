@@ -1,4 +1,4 @@
-"""System prompt builder - English only."""
+"""System prompt builder — language-aware."""
 
 import logging
 from pathlib import Path
@@ -10,14 +10,16 @@ def build_system_prompt(
     hostname: str = "",
     deploy_path: str = "",
     target_model: str = "",
+    user_language: str = "",
 ) -> str:
-    """Build unified system prompt.
-    
+    """Build unified system prompt — language-aware.
+
     Args:
         name: Worker identity name (seoul/ani/tico/kael)
         hostname: Machine hostname
         deploy_path: Deployment directory path
         target_model: Active AI model name
+        user_language: Detected user language (ISO code or name)
 
     Returns:
         Complete system prompt string
@@ -131,5 +133,18 @@ def build_system_prompt(
         "- VPS fleet info: read ~/anchors/ops-anchor.json",
     ]
     parts.append("\n".join(tools))
+
+    # Language matching — detected from user input at the code level
+    if user_language:
+        lang_msg = f"You MUST reply in {user_language}. Use the same language as the user's message."
+        if user_language == "zh" or user_language == "zh-cn":
+            lang_msg = f"用户使用的是中文。你必须用中文回复，与用户语言保持一致。"
+        elif user_language == "ja":
+            lang_msg = f"ユーザーは日本語を使用しています。必ず日本語で返信してください。"
+        elif user_language == "ko":
+            lang_msg = f"사용자가 한국어를 사용하고 있습니다. 반드시 한국어로 답변하세요."
+        elif user_language in ("auto", "mixed"):
+            lang_msg = "Reply in the same language as the user's message. Match their language exactly."
+        parts.append(f"## Language\n{lang_msg}")
 
     return "\n\n".join(parts)
