@@ -259,7 +259,7 @@ def main():
             os.environ["ANCHOR_FILE"] = str(fallback)
     
     print(f"Anchor server v0.2 -> {ANCHOR_FILE}")
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), AnchorHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), AnchorHandler)
     print(f"Listening on :{PORT}")
     server.serve_forever()
 

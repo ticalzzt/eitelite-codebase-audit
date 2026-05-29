@@ -149,7 +149,7 @@ class Worker:
                 self._pending_task_file.unlink(missing_ok=True)
                 return data
         except Exception as e:
-            logger.debug(f"[{filepath.stem}] swallowed: {e}")
+            logger.debug(f"[pending_task] swallowed: {e}")
         return None
 
     def _save_pending(self, task: str, iteration: int = 0):
@@ -247,7 +247,7 @@ class Worker:
                 return CMD_LEVEL_ADMIN
             return CMD_LEVEL_WORKER
         if msg.source in ("telegram", "weixin"):
-            return CMD_LEVEL_MASTER
+            return CMD_LEVEL_WORKER
         return CMD_LEVEL_WORKER
 
     def _send_cmd_reply(self, channel, msg: Message, text: str) -> None:
@@ -293,7 +293,7 @@ class Worker:
                 if _r.returncode == 0:
                     lines.append(f"Git:    {_r.stdout.strip()[:60]}")
             except Exception as e:
-                logger.debug(f"[{filepath.stem}] swallowed: {e}")
+                logger.debug(f"[status] swallowed: {e}")
             return "\n".join(lines)
 
         if cmd_name == "report":
@@ -311,14 +311,14 @@ class Worker:
                 _r = _sp.run(["uptime"], capture_output=True, text=True, timeout=5)
                 lines.append(f"Uptime:   {_r.stdout.strip()}")
             except Exception as e:
-                logger.debug(f"[{filepath.stem}] swallowed: {e}")
+                logger.debug(f"[status] swallowed: {e}")
             try:
                 _r = _sp.run(["git", "log", "--oneline", "-3"],
                              capture_output=True, text=True, timeout=5)
                 if _r.returncode == 0:
                     lines.append(f"Recent:   {_r.stdout.strip()}")
             except Exception as e:
-                logger.debug(f"[{filepath.stem}] swallowed: {e}")
+                logger.debug(f"[status] swallowed: {e}")
             return "\n".join(lines)
 
         if cmd_name == "deploy":
@@ -360,6 +360,8 @@ class Worker:
                 return f"[CMD] escalate error: {e}"
 
         if cmd_name == "exec":
+            if level < CMD_LEVEL_ADMIN:
+                return "[CMD] exec requires admin level"
             payload = " ".join(cmd_args)
             if not payload:
                 return "[CMD] exec: empty command"
