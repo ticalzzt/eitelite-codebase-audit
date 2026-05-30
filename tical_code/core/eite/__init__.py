@@ -1,6 +1,9 @@
-"""EITE - Execution Integrity & Trust Enforcement.
+"""EITE verification module — powered by verify_engine_v2."""
+from tical_code.core.eite.verify_engine_v2 import VerificationEngine
 
-Post-tool verification layer for tical-code workers.
-"""
-from .verify_engine_v2 import VerificationEngine
-from .signature import sign, verify, _get_hardware_id
+def get_verify():
+    """Return VerificationEngine instance or None."""
+    try:
+        return VerificationEngine()
+    except (ImportError, Exception):
+        return None
