@@ -29,6 +29,20 @@ from tical_code.core.trace_recorder import TraceRecorder
 from tical_code.core.trace.verification_recorder import VerificationEventRecorder
 from tical_code.core.config import get_data_collection_config
 from tical_code.core.modules.proposal_gate import ProposalGate
+from tical_code.core.memory import get_persistent_memory
+from tical_code.core.security_baseline import (
+    validate_path_safety,
+    validate_url,
+    redact_secrets as security_redact,
+    sandbox_path_check,
+    sandbox_network_check,
+    check_outbound_request,
+    PathSafetyConfig,
+    URLSafetyConfig,
+    OutboundConfig,
+)
+from tical_code.vigil import build_vigil
+from tical_code.core.usage import UsageTracker
 
 # Known AI worker names — used for CMD protocol identity detection
 WORKER_IDS = {"seoul", "tico", "ani", "kael", "tico-oracle", "test"}
@@ -123,6 +137,55 @@ class Worker:
             logger.info('TraceRecorder active -> %s' % dc['target_url'])
         self.gate = ProposalGate(timeout_seconds=300)
         self._evidence_retry_count = 0
+
+        # Usage tracking
+        self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
+
+        # Fallback model: retry with this when primary fails
+        self.fallback_model = cfg.get("fallback_model", "")
+
+        # CDP browser config — set env for tool_executor to pick up
+        cdp_url = cfg.get("cdp_url", "")
+        if cdp_url:
+            os.environ["CDP_URL"] = cdp_url
+            logger.info(f"CDP browser: {cdp_url}")
+        if not cfg.get("cdp_headless", True):
+            os.environ["CDP_HEADLESS"] = "0"
+        cdp_proxy = cfg.get("cdp_proxy", "")
+        if cdp_proxy:
+            os.environ["CDP_PROXY"] = cdp_proxy
+
+        # Vigil — passive monitoring (patrol every 5 minutes)
+        try:
+            self._vigil = build_vigil()
+            self._vigil_patrol_interval = 300  # seconds
+            self._last_patrol = 0
+            logger.info("Vigil monitoring active")
+        except Exception as e:
+            self._vigil = None
+            logger.warning(f"Vigil init failed (non-critical): {e}")
+
+        # Security Baseline — path safety, SSRF protection, sensitive info redaction
+        self._security_enabled = True
+        self._sandbox_allowed_dirs = [cfg.get("workspace", ".")]
+        try:
+            self._security_path_cfg = PathSafetyConfig(
+                allowed_dirs=self._sandbox_allowed_dirs,
+                deny_symlinks=True,
+                deny_absolute=True,
+            )
+            self._security_url_cfg = URLSafetyConfig(
+                allowed_schemes=frozenset({'http', 'https'}),
+                allow_private_ip=False,
+                check_dns_rebinding=True,
+            )
+            self._security_outbound_cfg = OutboundConfig(
+                url_config=self._security_url_cfg,
+            )
+            logger.info("Security Baseline active (TOCTOU + SSRF + redaction)")
+        except Exception as e:
+            self._security_enabled = False
+            logger.warning(f"Security Baseline init failed (non-critical): {e}")
 
         self.system_prompt = build_system_prompt(
             name=cfg['name'],
