@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from tical_code.core.channel import Message, Response, TelegramChannel, TicalChatChannel
 from tical_code.core.llm_backend import create_llm_backend
 from tical_code.core.tool_executor import execute, TOOL_SCHEMAS
-from tical_code.core.response_formatter import format_result, format_error, format_progress
+from tical_code.core.response_formatter import format_result
 from tical_code.core.eite.verify_engine_v2 import VerificationEngine
 from tical_code.core.prompt import build_system_prompt
 from tical_code.core.config import load_config
@@ -28,14 +28,7 @@ from tical_code.core.modules.loop_detector import LoopDetector
 from tical_code.core.trace_recorder import TraceRecorder
 from tical_code.core.trace.verification_recorder import VerificationEventRecorder
 from tical_code.core.config import get_data_collection_config
-from tical_code.core.memory import get_persistent_memory
 from tical_code.core.security_baseline import (
-    validate_path_safety,
-    validate_url,
-    redact_secrets as security_redact,
-    sandbox_path_check,
-    sandbox_network_check,
-    check_outbound_request,
     PathSafetyConfig,
     URLSafetyConfig,
     OutboundConfig,
@@ -118,7 +111,7 @@ class Worker:
         # Kael's modules
         w = cfg.get("workspace", ".")
         self.sessions = SessionManager(db_path=str(Path(w) / "sessions.db"))
-        self.compactor = ContextCompactor(max_tokens=200000, keep_recent=20)
+        self.compactor = ContextCompactor(max_tokens=24000, keep_recent=12)
         self.loop_detector = LoopDetector(window_size=30)
         # VerificationEngine — single source of truth for all verification
         self.verification = VerificationEngine(
@@ -656,6 +649,18 @@ All other messages enter the LLM conversation loop.
         history = self.sessions.load_session(session_id)
         if history:
             conv.extend(history)
+            # Token-aware session trimming — keep system + user + last ~15 messages
+            if self.compactor.needs_compaction(conv):
+                estimate = self.compactor.estimate_tokens(conv)
+                logger.info(f"  session trim: {len(conv)} msgs, ~{estimate} tokens (max={self.compactor.max_tokens})")
+                system = conv[0] if conv[0].get('role') == 'system' else None
+                # Keep system + user msg + last 12 turns
+                keep = 14 if system else 15
+                if len(conv) > keep:
+                    new_conv = [conv[0]] if system else []
+                    new_conv.extend(conv[-keep:])
+                    conv = new_conv
+                    logger.info(f"  trimmed to {len(conv)} msgs")
         # Build user message content - include media if available
         if hasattr(msg, 'media_data') and msg.media_data:
             content_parts = [{"type": "text", "text": msg.content}]
@@ -806,12 +811,25 @@ All other messages enter the LLM conversation loop.
                     self.tracer.on_task_end(True)
 
                 if channel:
-                    channel.send(Response(
-                        content=reply,
-                        target=msg.sender,
-                        source=msg.source,
-                        chat_id=msg.chat_id,
-                    ))
+                    # Split long replies into chunks (Telegram 4000 char limit)
+                    if len(reply) > 4000:
+                        for i in range(0, len(reply), 4000):
+                            chunk = reply[i:i+4000]
+                            if i > 0:
+                                chunk = f"[cont. {i//4000+1}] {chunk}"
+                            channel.send(Response(
+                                content=chunk,
+                                target=msg.sender,
+                                source=msg.source,
+                                chat_id=msg.chat_id,
+                            ))
+                    else:
+                        channel.send(Response(
+                            content=reply,
+                            target=msg.sender,
+                            source=msg.source,
+                            chat_id=msg.chat_id,
+                        ))
                 logger.info(f"  reply: {reply[:80]}")
 
                 # Module 1: Save conversation — full turn (user + tool chain + assistant)
