@@ -635,12 +635,10 @@ All other messages enter the LLM conversation loop.
         import tical_code.core.tool_executor as _te
 
         # Reset verification session tracking for this turn
-        # Reset verification session tracking for this turn
         if self.verification:
             self.verification.reset_session()
         if self.verif_recorder:
             self.verif_recorder.start_turn(msg.content)
-        self.verif_recorder.start_turn(msg.content)
 
         # TraceRecorder: task start
         if self.tracer:
