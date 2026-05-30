@@ -79,15 +79,15 @@ def t1_imports():
     from tical_code.core.modules.loop_detector import LoopDetector
     from tical_code.core.modules.context_compactor import ContextCompactor
     from tical_code.core.modules.proposal_gate import ProposalGate
-    from tical_code.core.eite import init, get_verify
+    from tical_code.core.eite.verify_engine_v2 import VerificationEngine
+    assert VerificationEngine
     assert build_system_prompt, "build_system_prompt not importable"
 
 @test("EITE modules import", "T1")
 def t1_eite():
-    from tical_code.core.eite import init, get_verify
-    from tical_code.core.eite.verify import VerifyLayer
+    from tical_code.core.eite.verify_engine_v2 import VerificationEngine
     from tical_code.core.eite.signature import sign, verify, _get_hardware_id
-    assert VerifyLayer
+    assert VerificationEngine
 
 @test("unified_worker parseable", "T1")
 def t1_worker():
