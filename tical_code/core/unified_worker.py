@@ -110,72 +110,76 @@ class Worker:
 
         # Kael's modules
         w = cfg.get("workspace", ".")
+        # Module config — EITElite defaults to lightweight mode
+        _mc = cfg.get("modules", {})
         self.sessions = SessionManager(db_path=str(Path(w) / "sessions.db"))
         self.compactor = ContextCompactor(max_tokens=24000, keep_recent=12)
-        self.loop_detector = LoopDetector(window_size=30)
-        # VerificationEngine — single source of truth for all verification
-        self.verification = VerificationEngine(
-            identity_id=cfg['name'],
-            workspace=cfg.get("workspace", ""),
-        )
-        # TraceRecorder - 0号模型训练数据采集
-        dc = get_data_collection_config(cfg)
-        self.tracer = TraceRecorder(system_name=cfg.get('name', 'eitelite'), enabled=dc['enabled'])
-        # VerificationEventRecorder — captures verification signals for training
-        self.verif_recorder = VerificationEventRecorder()
-        if dc['enabled']:
-            logger.info('TraceRecorder active -> %s' % dc['target_url'])
+        
+        # -- Verification engine (fenced mode: default OFF for EITElite) --
+        self.verification = None
+        self.verif_recorder = None
+        if _mc.get("verification", False):
+            self.verification = VerificationEngine(
+                identity_id=cfg["name"],
+                workspace=cfg.get("workspace", ""),
+            )
+            self.verif_recorder = VerificationEventRecorder()
+            logger.info("Verification engine active")
+        
+        # -- Trace recorder (training data collection, default ON for EITElite) --
+        self.tracer = None
+        if _mc.get("trace_recorder", True):
+            dc = get_data_collection_config(cfg)
+            self.tracer = TraceRecorder(system_name=cfg.get("name", "eitelite"), enabled=dc["enabled"])
+            if dc["enabled"]:
+                logger.info("TraceRecorder active -> %s" % dc["target_url"])
         self._evidence_retry_count = 0
-
-        # Usage tracking
-        self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
-
-        # Fallback model: retry with this when primary fails
-        self.fallback_model = cfg.get("fallback_model", "")
-
-        # CDP browser config — set env for tool_executor to pick up
-        cdp_url = cfg.get("cdp_url", "")
-        if cdp_url:
-            os.environ["CDP_URL"] = cdp_url
-            logger.info(f"CDP browser: {cdp_url}")
-        if not cfg.get("cdp_headless", True):
-            os.environ["CDP_HEADLESS"] = "0"
-        cdp_proxy = cfg.get("cdp_proxy", "")
-        if cdp_proxy:
-            os.environ["CDP_PROXY"] = cdp_proxy
-
-        # Vigil — passive monitoring (patrol every 5 minutes)
-        try:
-            self._vigil = build_vigil()
-            self._vigil_patrol_interval = 300  # seconds
-            self._last_patrol = 0
-            logger.info("Vigil monitoring active")
-        except Exception as e:
-            self._vigil = None
-            logger.warning(f"Vigil init failed (non-critical): {e}")
-
-        # Security Baseline — path safety, SSRF protection, sensitive info redaction
-        self._security_enabled = True
-        self._sandbox_allowed_dirs = [cfg.get("workspace", ".")]
-        try:
-            self._security_path_cfg = PathSafetyConfig(
-                allowed_dirs=self._sandbox_allowed_dirs,
-                deny_symlinks=True,
-                deny_absolute=True,
-            )
-            self._security_url_cfg = URLSafetyConfig(
-                allowed_schemes=frozenset({'http', 'https'}),
-                allow_private_ip=False,
-                check_dns_rebinding=True,
-            )
-            self._security_outbound_cfg = OutboundConfig(
-                url_config=self._security_url_cfg,
-            )
-            logger.info("Security Baseline active (TOCTOU + SSRF + redaction)")
-        except Exception as e:
-            self._security_enabled = False
-            logger.warning(f"Security Baseline init failed (non-critical): {e}")
-
+        
+        # -- Loop detector (default OFF for EITElite) --
+        self.loop_detector = None
+        if _mc.get("loop_detector", False):
+            self.loop_detector = LoopDetector(window_size=30)
+            logger.info("Loop detector active")
+        
+        # -- Usage tracker (default OFF for EITElite) --
+        self.usage = None
+        if _mc.get("usage_tracker", False):
+            self.usage = UsageTracker(db_path=str(Path(w) / "usage.db"))
+            logger.info("Usage tracker active")
+        
+        # -- Vigil (default OFF for EITElite) --
+        self._vigil = None
+        if _mc.get("vigil", False):
+            try:
+                self._vigil = build_vigil()
+                self._vigil_patrol_interval = 300
+                self._last_patrol = 0
+                logger.info("Vigil monitoring active")
+            except Exception as e:
+                logger.warning("Vigil init failed (non-critical): %s" % e)
+        
+        # -- Security Baseline (default OFF for EITElite) --
+        self._security_enabled = False
+        if _mc.get("security_baseline", False):
+            self._sandbox_allowed_dirs = [cfg.get("workspace", ".")]
+            try:
+                self._security_path_cfg = PathSafetyConfig(
+                    allowed_dirs=self._sandbox_allowed_dirs,
+                    deny_symlinks=True,
+                    deny_absolute=True,
+                )
+                self._security_url_cfg = URLSafetyConfig(
+                    allowed_schemes=frozenset(('http', 'https')),
+                    allow_private_ip=False,
+                    check_dns_rebinding=True,
+                )
+                self._security_outbound_cfg = OutboundConfig(
+                    url_config=self._security_url_cfg,
+                )
+                logger.info("Security Baseline active (TOCTOU + SSRF + redaction)")
+            except Exception as e:
+                logger.warning("Security Baseline init failed (non-critical): %s" % e)
+        
         self.system_prompt = build_system_prompt(
             name=cfg['name'],
             hostname=self._get_hostname(),
@@ -184,7 +188,8 @@ class Worker:
         )
 
         # EITE identity layer — now integrated into VerificationEngine
-        self.system_prompt += self.verification.get_identity_marker()
+        if self.verification:
+            self.system_prompt += self.verification.get_identity_marker()
         logger.info(f"EITE identity bound: {cfg['name']}")
 
         logger.info(
@@ -630,12 +635,15 @@ All other messages enter the LLM conversation loop.
         import tical_code.core.tool_executor as _te
 
         # Reset verification session tracking for this turn
-        self.verification.reset_session()
-        # Start recording verification events for this turn
+        # Reset verification session tracking for this turn
+        if self.verification:
+            self.verification.reset_session()
+        if self.verif_recorder:
+            self.verif_recorder.start_turn(msg.content)
         self.verif_recorder.start_turn(msg.content)
 
         # TraceRecorder: task start
-        if hasattr(self, 'tracer'):
+        if self.tracer:
             self.tracer.on_task_start(
                 '%s_%s_%d' % (msg.source, msg.sender, int(__import__('time').time())),
                 msg.content[:200],
@@ -716,7 +724,11 @@ All other messages enter the LLM conversation loop.
                     logger.info(f"  tool call: {name}")
 
                     # Phase 1: Verify tool call (before execution)
-                    phase1 = self.verification.verify_tool_call(name, args)
+                    # Phase 1: Verify tool call (before execution)
+                    if self.verification:
+                        phase1 = self.verification.verify_tool_call(name, args)
+                    else:
+                        phase1 = type("obj", (object,), {"passed": True, "violations": []})()
                     if not phase1.passed:
                         conv.append({
                             "role": "tool",
@@ -729,15 +741,20 @@ All other messages enter the LLM conversation loop.
                     result = execute(name, args, base_dir=self.workspace)
                     formatted = format_result(name, result)
 
-                    # Phase 2: Log tool output verification (no blocking)
-                    phase2 = self.verification.verify_tool_output(name, args, result)
-                    # Record verification event for training data
-                    self.verif_recorder.record_tool_call(name, args, result, phase2.passed)
-                    if not phase2.passed:
-                        for v in phase2.violations:
-                            self.verif_recorder.record_violation(v.rule, v.category, v.claim, v.detail, v.severity)
-                    if not phase2.passed:
-                        logger.warning(f"  verify {name}: WARNING {phase2.violations[0].detail if phase2.violations else 'check failed'}")
+                    # Phase 2: Verify tool output (after execution)
+                    if self.verification:
+                        phase2 = self.verification.verify_tool_output(name, args, result)
+                        self.verif_recorder.record_tool_call(name, args, result, phase2.passed)
+                        if not phase2.passed:
+                            for v in phase2.violations:
+                                self.verif_recorder.record_violation(v.rule, v.category, v.claim, v.detail, v.severity)
+                            logger.warning("  verify %s: WARNING %s" % (name, phase2.violations[0].detail if phase2.violations else "check failed"))
+                        elif self.verif_recorder:
+                            # Record basic stats even when verification passes
+                            self.verif_recorder.record_tool_call(name, args, result, True)
+                    else:
+                        # Verification disabled — skip Phase 2 entirely
+                        pass
                     if not formatted:
                         formatted = json.dumps(result, ensure_ascii=False)[:4000]
 
@@ -750,17 +767,22 @@ All other messages enter the LLM conversation loop.
 
                     # Record action for verification (already done in verify_tool_output)
                     # TraceRecorder: record tool
-                    if hasattr(self, 'tracer'):
+                    if self.tracer:
                         verified = result.get("ok", False) or result.get("exit_code") == 0
                         self.tracer.on_tool_result(name, args, result, verified)
 
                     # Module 3: Record & detect loop
-                    self.loop_detector.record(name, args, result)
-                    loop_result = self.loop_detector.detect()
-                    if loop_result:
-                        loop_messages.append(loop_result["message"])
-                        if loop_result["level"] == "critical":
-                            break
+                    # Module: Loop detection
+                    if self.loop_detector:
+                        self.loop_detector.record(name, args, result)
+                        loop_result = self.loop_detector.detect()
+                        if loop_result:
+                            loop_messages.append(loop_result["message"])
+                            if loop_result["level"] == "critical":
+                                break
+                    else:
+                        # Loop detection disabled — no op
+                        pass
 
                 # Append accumulated loop detector messages after all tool responses
                 for ld_msg in loop_messages:
@@ -791,15 +813,17 @@ All other messages enter the LLM conversation loop.
                 # Text response
                 reply = content or "[worker] no response"
 
-                # Phase 3: Log reply verification (no blocking)
-                self.verif_recorder._turn_buffer["initial_reply"] = reply
-                phase3 = self.verification.verify_reply(reply)
-                if not phase3.passed:
-                    for v in phase3.violations:
-                        self.verif_recorder.record_violation(v.rule, v.category, v.claim, v.detail, v.severity)
-                    if phase3.action in ("block", "retry", "rewrite"):
-                        logger.warning(f"Reply verification: {phase3.corrections}")
-
+                # Phase 3: Verify reply before sending (only if verification enabled)
+                if self.verification:
+                    if self.verif_recorder:
+                        self.verif_recorder._turn_buffer["initial_reply"] = reply
+                    phase3 = self.verification.verify_reply(reply)
+                    if not phase3.passed:
+                        for v in phase3.violations:
+                            if self.verif_recorder:
+                                self.verif_recorder.record_violation(v.rule, v.category, v.claim, v.detail, v.severity)
+                        if phase3.action in ("block", "retry", "rewrite"):
+                            logger.warning("Reply verification: %s" % phase3.corrections)
                 # Check for continuation hint — only if explicit "I still need to"
                 if "I still need to" in reply:
                     next_task = reply.split("I still need to", 1)[-1].strip()
@@ -807,7 +831,7 @@ All other messages enter the LLM conversation loop.
                     reply += f"\n\n[task queued: {next_task[:60]}]"
 
                 # TraceRecorder: task end
-                if hasattr(self, 'tracer'):
+                if self.tracer:
                     self.tracer.on_task_end(True)
 
                 if channel:
@@ -844,13 +868,16 @@ All other messages enter the LLM conversation loop.
                     new_msgs.append(entry)
                 self.sessions.save_messages(session_id, new_msgs)
                 # End verification recording — save training data if violations occurred
-                self.verif_recorder.end_turn(reply)
+                if self.verif_recorder:
+                    if self.verif_recorder:
+                        self.verif_recorder.end_turn(reply)
                 return
 
         # Exceeded max iterations — send last reply to sender, save partial conversation
         logger.warning(f"[worker] {msg.sender}: exceeded max tool iterations")
         # End verification recording — save training data even on timeout
-        self.verif_recorder.end_turn("[timeout]")
+        if self.verif_recorder:
+            self.verif_recorder.end_turn("[timeout]")
         try:
             session_id = self.sessions.get_session_id(msg.source, str(msg.chat_id))
             new_msgs = []
