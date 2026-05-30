@@ -25,14 +25,14 @@ def format_result(name: str, result: dict) -> str:
         err = result.get("stderr", "")
         code = result.get("exit_code", -1)
         if code == 0 and out:
-            return out[:500]
+            return out[:4000]
         elif code != 0:
             return f"[bash] exit={code} {err[:200]}"
         return "[bash] done (no output)"
 
     # file_read
     if name == "file_read" and "content" in result:
-        return f"[file] {result['path']}: {result['content'][:500]}"
+        return f"[file] {result['path']}: {result['content'][:4000]}"
 
     # file_write
     if name == "file_write":
@@ -60,5 +60,5 @@ def format_result(name: str, result: dict) -> str:
         target = result.get("target", "?")
         return f"[chat] sent to {target}" if result.get("ok") else "[chat] send failed"
 
-    return json.dumps(result, ensure_ascii=False)[:200]
+    return json.dumps(result, ensure_ascii=False)[:4000]
 

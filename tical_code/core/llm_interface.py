@@ -91,8 +91,8 @@ class DeepSeekProvider(LLMProvider):
         api_key: str = "",
         base_url: str = "https://api.deepseek.com/v1",
         model: str = "deepseek-chat",
-        max_tokens: int = 4000,
-        timeout: int = 30,
+        max_tokens: int = 16000,
+        timeout: int = 60,
     ):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -244,7 +244,7 @@ class DeepSeekProvider(LLMProvider):
                 for tc in valid_tcs:
                     try:
                         result = executor(tc.name, tc.arguments)
-                        result_str = json.dumps(result, ensure_ascii=False)[:2000]
+                        result_str = json.dumps(result, ensure_ascii=False)[:8000]
                         logger.info(f"[C.2.3] round {_round_count} tool={tc.name} ok")
                     except Exception as e:
                         result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
